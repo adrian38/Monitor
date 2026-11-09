@@ -32,6 +32,13 @@ Los niveles son:
 - `🟢 COPYMONITOR — RESUELTO`: el problema avisado ya no existe, lo haya
   corregido CopyMonitor o la propia copiadora.
 
+El vigilante MT4 (`terminal_watchdog.md`) comparte formato pero no tiene dos
+cuentas que identificar: encabeza con `PORTAFOLIO ALIAS`, un `TERMINAL` opcional
+y `ID TERMINAL`, `BROKER TERMINAL` y `SERVIDOR` de la cuenta vigilada. Usa
+`🔴 CRÍTICO` para la caída, `🟢 RESUELTO` para la recuperación y
+`🔵 COPYMONITOR — VIGILANCIA ACTIVA` para el aviso opcional de arranque, que
+sólo sirve para comprobar que el terminal puede avisar.
+
 Cada problema emite un `ALERTA` al detectarse y un único `RESUELTO` al cerrarse,
 incluido el caso en que la operación avisada simplemente deja de existir. Una
 corrección automática fallida emite `CRÍTICO` con retcode y detalle.

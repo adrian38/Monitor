@@ -1,5 +1,6 @@
 # MetaTrader build outputs
 *.ex5
+*.ex4
 *.log
 
 # Local/editor state

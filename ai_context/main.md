@@ -16,6 +16,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   persistencia, revalidación y mensajes de resolución de los arreglos.
 - [robustness.md](robustness.md): publicación atómica, lectura reintentada,
   validación de configuración, cola de avisos y guardas previas a corregir.
+- [terminal_watchdog.md](terminal_watchdog.md): vigilancia de conexión del
+  terminal MT4, confirmación de la caída, recordatorios y límite del vigilante.
 
 El código es la autoridad sobre los detalles que no estén documentados aquí.
 Toda decisión duradera nueva debe añadirse a una nota temática y a este índice.

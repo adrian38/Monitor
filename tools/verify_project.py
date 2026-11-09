@@ -12,6 +12,8 @@ SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
     "slave": ROOT / "CopyMonitor_Slave_MT5_v1_17_MULTI.mq5",
 }
+# Standalone MT4 connection watchdog. It shares no snapshot with the MQL5 pair.
+WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
 
 
 def require(condition: bool, message: str, failures: list[str]) -> None:
@@ -313,6 +315,98 @@ def check_tunables(master: str, slave: str, failures: list[str]) -> None:
     )
 
 
+def check_watchdog(failures: list[str]) -> None:
+    """The MT4 watchdog only reports: it must never touch the account."""
+    require(WATCHDOG.is_file(), f"missing source: {WATCHDOG.name}", failures)
+    if not WATCHDOG.is_file():
+        return
+
+    source = WATCHDOG.read_text(encoding="utf-8")
+    version = property_version(source)
+    file_version = re.search(r"_v(\d+)_(\d+)\.mq4$", WATCHDOG.name)
+    expected = f"{file_version.group(1)}.{file_version.group(2)}" if file_version else None
+
+    require(version == expected, "watchdog: filename/property version mismatch", failures)
+    require(
+        bool(version and f'#define CM_WD_VERSION        "{version}"' in source),
+        "watchdog: visible version label is stale",
+        failures,
+    )
+    require(
+        bool(version and f"Watchdog MT4 v{version}" in source),
+        "watchdog: description label is stale",
+        failures,
+    )
+    require(source.count("{") == source.count("}"), "watchdog: unbalanced braces", failures)
+    require("#property strict" in source, "watchdog: strict mode missing", failures)
+
+    required = (
+        # Without a connection no ticks arrive: the timer is the only engine
+        # that still runs when the alert has to go out.
+        "EventSetTimer(InpCheckSeconds)",
+        "void OnTimer()",
+        "IsConnected()",
+        # TimeCurrent() freezes on the last quote and would mis-measure the
+        # outage, so every instant comes from the local clock.
+        "TimeLocal()",
+        # A brief drop is not an outage, and the outage is repeated until it
+        # clears.
+        "InpOfflineConfirmSeconds",
+        "InpOfflineRepeatMinutes",
+        '"Estado: TERMINAL OFFLINE\\n"',
+        '"Estado: TERMINAL ONLINE\\n"',
+        '"PORTAFOLIO ALIAS: "',
+        '"ID TERMINAL: "',
+        '"BROKER TERMINAL: "',
+        "🔴 COPYMONITOR — CRÍTICO",
+        "🟢 COPYMONITOR — RESUELTO",
+        # A notice that could not be delivered waits in a bounded queue.
+        "TgSplit(",
+        "TgEnqueue(",
+        "TgFlush(",
+        "InpTelegramChunkChars",
+    )
+    for token in required:
+        require(token in source, f"watchdog: missing contract: {token}", failures)
+
+    # The watchdog observes and notifies. Any order call is a contract break.
+    for forbidden in ("OrderSend(", "OrderClose(", "OrderDelete(", "OrderModify("):
+        require(forbidden not in source, f"watchdog: trading action detected: {forbidden}", failures)
+
+    # Telegram enabled without credentials would leave the user unaware and
+    # unwarned, so the EA must refuse to start.
+    require(
+        "bool Validate()" in source and "return INIT_FAILED" in source,
+        "watchdog: inputs are not validated at init",
+        failures,
+    )
+    for input_name in (
+        "InpPortfolioAlias",
+        "InpCheckSeconds",
+        "InpOfflineConfirmSeconds",
+        "InpOfflineRepeatMinutes",
+        "InpTelegramQueueMax",
+        "InpTelegramSendsPerCycle",
+    ):
+        require(
+            input_name in source.split("bool Validate()")[-1].split("int OnInit()")[0],
+            f"watchdog: {input_name} is not validated at init",
+            failures,
+        )
+
+    expected_defaults = {
+        "InpCheckSeconds": "5",
+        "InpOfflineConfirmSeconds": "60",
+        "InpOfflineRepeatMinutes": "5",
+    }
+    for input_name, default in expected_defaults.items():
+        require(
+            bool(re.search(rf"^input\s+int\s+{input_name}\s*=\s*{default}\s*;", source, re.MULTILINE)),
+            f"watchdog: {input_name} must be an input defaulting to {default}",
+            failures,
+        )
+
+
 def check_context(failures: list[str]) -> None:
     index = (ROOT / "ai_context" / "main.md").read_text(encoding="utf-8")
     for note in (
@@ -323,6 +417,7 @@ def check_context(failures: list[str]) -> None:
         "telegram_messages.md",
         "automatic_corrections.md",
         "robustness.md",
+        "terminal_watchdog.md",
     ):
         require(note in index, f"ai_context index missing {note}", failures)
         require((ROOT / "ai_context" / note).is_file(), f"missing ai_context/{note}", failures)
@@ -336,6 +431,13 @@ def check_documentation(failures: list[str]) -> None:
         for name in expected:
             require(name in text, f"{relative}: does not reference {name}", failures)
 
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    require(
+        WATCHDOG.name in readme,
+        f"README.md: does not reference {WATCHDOG.name}",
+        failures,
+    )
+
 
 def main() -> int:
     failures: list[str] = []
@@ -346,6 +448,7 @@ def main() -> int:
     check_telegram_contract(source["slave"], failures)
     check_automatic_corrections(source["slave"], failures)
     check_tunables(source["master"], source["slave"], failures)
+    check_watchdog(failures)
     check_context(failures)
     check_documentation(failures)
 
@@ -354,7 +457,9 @@ def main() -> int:
             print(f"FAIL: {failure}")
         return 1
 
-    print(f"OK: {len(SOURCES)} MQL5 sources and shared protocol verified")
+    print(
+        f"OK: {len(SOURCES)} MQL5 sources, shared protocol and the MT4 watchdog verified"
+    )
     return 0
 
 

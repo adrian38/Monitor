@@ -2,7 +2,9 @@
 
 Monitor de consistencia entre una cuenta Master y una cuenta Slave de
 MetaTrader 5. El proyecto no copia operaciones: publica el estado del Master,
-compara las copias existentes en el Slave y avisa de diferencias.
+compara las copias existentes en el Slave y avisa de diferencias. Incluye
+además un vigilante independiente de MetaTrader 4 que avisa cuando un terminal
+pierde la conexión.
 
 ## Componentes
 
@@ -11,6 +13,9 @@ compara las copias existentes en el Slave y avisa de diferencias.
 - `CopyMonitor_Slave_MT5_v1_17_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
+- `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
+  avisa por Telegram cuando el terminal pierde la conexión con su servidor y
+  repite el aviso hasta que se recupera. No participa en el snapshot.
 
 Los terminales se comunican mediante
 `FILE_COMMON/CopyMonitorMulti/CM_<channel>.txt`. No requieren sockets ni un
@@ -65,6 +70,28 @@ Cuando los brokers nombran un instrumento de forma diferente, usa
 `InpSymbolMaps` con entradas `CANAL,SIMBOLO_MASTER,SIMBOLO_SLAVE` separadas por
 punto y coma.
 
+## Vigilancia de terminal offline (MT4)
+
+`CopyMonitor_Watchdog_MT4_v1_00.mq4` se adjunta a cualquier gráfico del
+terminal MT4 que quieras vigilar y usa las mismas claves de Telegram que el
+Slave: `InpTelegramBotToken` y `InpTelegramChatID` se rellenan en el terminal,
+nunca en el repositorio. `InpPortfolioAlias` también es obligatorio aquí.
+
+La caída se confirma tras `InpOfflineConfirmSeconds` segundos seguidos sin
+conexión (60 por defecto), se avisa al confirmarla y el aviso se repite cada
+`InpOfflineRepeatMinutes` minutos (5 por defecto) hasta que el terminal vuelve,
+momento en el que sale un único `RESUELTO` con la duración de la caída. Un
+recordatorio que no logra salir —porque lo caído es la línea de Internet— se
+sustituye por el siguiente en lugar de acumularse.
+
+`api.telegram.org` debe figurar en Herramientas → Opciones → Expert Advisors →
+«Permitir WebRequest para las siguientes URL», o ningún aviso saldrá del
+terminal.
+
+El vigilante sólo puede informar mientras MT4 siga ejecutándose: si el terminal
+se cierra o el equipo se apaga, no hay aviso. Detalles en
+`ai_context/terminal_watchdog.md`.
+
 ## Verificación
 
 La comprobación estática del repositorio no abre MetaTrader:
@@ -73,6 +100,7 @@ La comprobación estática del repositorio no abre MetaTrader:
 python -m tools.verify_project
 ```
 
-Para una entrega, compila además ambos EAs con MetaEditor. Consulta
-`ai_context/main.md` para el contrato técnico completo.
+Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y el
+vigilante `.mq4` con el MetaEditor de MT4. Consulta `ai_context/main.md` para el
+contrato técnico completo.
 
