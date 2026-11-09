@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "codebase-memory-mcp": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "codebase-memory-mcp"],
+      "env": {
+        "CBM_ALLOWED_ROOT": "C:\\Users\\Adrian\\Adrian\\TRADING\\Monitor",
+        "CBM_CACHE_DIR": "C:\\cbm\\cache",
+        "CBM_RUNTIME_DIR": "C:\\cbm\\run"
+      }
+    }
+  }
+}
+

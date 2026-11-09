@@ -1,0 +1,18 @@
+# MetaTrader build outputs
+*.ex5
+*.log
+
+# Local/editor state
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Codebase Memory local data
+.codebase-memory/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
