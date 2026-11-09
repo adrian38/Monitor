@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT5_v1_12_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_15_MULTI.mq5",
+    "master": ROOT / "CopyMonitor_Master_MT5_v1_13_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_16_MULTI.mq5",
 }
 
 
@@ -46,10 +46,16 @@ def check_source(name: str, path: Path, failures: list[str]) -> str:
 
 
 def check_protocol(master: str, slave: str, failures: list[str]) -> None:
-    for token in ("META|1|", '"POS|"', '"ORD|"', '"END\\r\\n"'):
+    for token in ("META|2|", '"POS|"', '"ORD|"', '"END\\r\\n"'):
         require(token in master, f"master: protocol token missing: {token}", failures)
 
-    for token in ('p[0]=="META"', 'p[1]=="1"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
+    require(
+        "ACCOUNT_COMPANY" in master,
+        "master: schema 2 must publish the Master broker",
+        failures,
+    )
+
+    for token in ('p[0]=="META"', 'p[1]=="1"', 'p[1]=="2"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
         require(token in slave, f"slave: protocol reader missing: {token}", failures)
 
     require(
@@ -64,8 +70,11 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
 
 def check_telegram_contract(slave: str, failures: list[str]) -> None:
     required = (
+        '"PORTAFOLIO ALIAS: "',
         '"ID MASTER: "',
+        '"BROKER MASTER: "',
         '"ID SLAVE: "',
+        '"BROKER SLAVE: "',
         '"Estado: POSICIÓN ACTIVA',
         '"Estado: ORDEN PENDIENTE',
         '"Volumen Slave: "',
@@ -91,9 +100,46 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
     )
 
 
+def check_automatic_corrections(slave: str, failures: list[str]) -> None:
+    required = (
+        "InpAutoFixPositionSLTP",
+        "InpAutoCreateMissingPending",
+        "InpAutoModifyPending",
+        "InpAutoFixPersistSeconds",
+        "ConfirmProblem(",
+        "FixPositionStops(",
+        "CreatePendingCopy(",
+        "ModifyPendingCopy(",
+        "ResolveAlert(",
+        "g_trade.OrderDelete(",
+        # A created copy must be verified as owned, or blocked, so the same
+        # missing pending is never created twice.
+        "StillOwnedPending(o,created_ticket,live)",
+        "IsCreateBlocked(",
+        "BlockCreate(",
+        "PruneState(",
+    )
+    for token in required:
+        require(token in slave, f"slave: automatic correction missing: {token}", failures)
+
+    for forbidden in ("g_trade.PositionOpen(", "g_trade.PositionClose("):
+        require(forbidden not in slave, f"slave: forbidden position action: {forbidden}", failures)
+
+    # Correction notices are mandatory; the old opt-out switches are gone.
+    for dead in ("InpNotifyDeleteSuccess", "InpNotifyDeleteFailure"):
+        require(dead not in slave, f"slave: removed input still referenced: {dead}", failures)
+
+
 def check_context(failures: list[str]) -> None:
     index = (ROOT / "ai_context" / "main.md").read_text(encoding="utf-8")
-    for note in ("architecture.md", "protocol_and_safety.md", "development.md"):
+    for note in (
+        "architecture.md",
+        "protocol_and_safety.md",
+        "development.md",
+        "pending_matching.md",
+        "telegram_messages.md",
+        "automatic_corrections.md",
+    ):
         require(note in index, f"ai_context index missing {note}", failures)
         require((ROOT / "ai_context" / note).is_file(), f"missing ai_context/{note}", failures)
 
@@ -103,6 +149,7 @@ def main() -> int:
     source = {name: check_source(name, path, failures) for name, path in SOURCES.items()}
     check_protocol(source["master"], source["slave"], failures)
     check_telegram_contract(source["slave"], failures)
+    check_automatic_corrections(source["slave"], failures)
     check_context(failures)
 
     if failures:

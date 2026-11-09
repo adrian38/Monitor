@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Master_MT5_v1_12_MULTI.mq5                           |
+//| CopyMonitor_Master_MT5_v1_13_MULTI.mq5                           |
 //| Publishes open positions + pending orders for CopyMonitor Slave. |
 //| No trading actions.                                               |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.12"
-#property description "CopyMonitor Master MT5 v1.12 MULTI"
+#property version   "1.13"
+#property description "CopyMonitor Master MT5 v1.13 MULTI"
 
 input group "===== MASTER IDENTITY ====="
 input string InpAccountNick         = "MASTER_280";
@@ -119,11 +119,13 @@ bool Publish()
       return false;
    }
 
+   // Esquema 2: igual que el 1 mas el broker del Master al final del META.
    FileWriteString(h,
-      "META|1|"+StringFormat("%I64d",(long)TimeLocal())+"|"+
+      "META|2|"+StringFormat("%I64d",(long)TimeLocal())+"|"+
       Safe(InpChannelID)+"|"+Safe(InpAccountNick)+"|"+
       StringFormat("%I64d",(long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+
-      IntegerToString(CountPos())+"|"+IntegerToString(CountPend())+"\r\n");
+      IntegerToString(CountPos())+"|"+IntegerToString(CountPend())+"|"+
+      Safe(AccountInfoString(ACCOUNT_COMPANY))+"\r\n");
 
    for(int i=0;i<PositionsTotal();i++)
    {
@@ -169,8 +171,9 @@ bool Publish()
 void Panel()
 {
    if(!InpShowPanel){ Comment(""); return; }
-   string s="COPYMONITOR MASTER v1.12 MULTI\n";
+   string s="COPYMONITOR MASTER v1.13 MULTI\n";
    s+="Nick: "+InpAccountNick+"\nChannel: "+InpChannelID+"\n";
+   s+="Broker: "+AccountInfoString(ACCOUNT_COMPANY)+"\n";
    s+="Open: "+IntegerToString(CountPos())+"\n";
    s+="Pending: "+IntegerToString(CountPend())+"\n";
    s+="Include symbols: "+(InpSymbolsFilter=="" ? "ALL" : InpSymbolsFilter)+"\n";

@@ -2,8 +2,9 @@
 
 El matching de pendientes es uno a uno. Cada orden Master monitorizada puede
 proteger como máximo una orden Slave y cada orden Slave puede corresponder como
-máximo a una Master. El emparejamiento exige canal/símbolo equivalente, tipo,
-volumen esperado y tolerancia de precio.
+máximo a una Master. El emparejamiento exige canal/símbolo equivalente, tipo y
+volumen esperado. El precio no forma parte de la identidad: una diferencia de
+entrada genera una alerta y, tras persistir, una modificación.
 
 Las pendientes asociadas a tickets Master ignorados se protegen primero y se
 retiran de todas las comprobaciones posteriores. Después se emparejan las

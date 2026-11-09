@@ -1,9 +1,12 @@
 # Mensajes de Telegram
 
-Todos los avisos empiezan con el nivel de CopyMonitor y los números reales de
-cuenta MT5: `ID MASTER` procede del snapshot y `ID SLAVE` de
-`ACCOUNT_LOGIN`. `InpSlaveID`, canal, owner, nick y perfil son datos internos y
-no se muestran en Telegram.
+Todos los avisos empiezan con el nivel de CopyMonitor, el alias de portafolio y
+la identificación de ambas cuentas: `PORTAFOLIO ALIAS` viene de
+`InpPortfolioAlias`, `ID MASTER` y `BROKER MASTER` proceden del snapshot, y
+`ID SLAVE` y `BROKER SLAVE` de `ACCOUNT_LOGIN` y `ACCOUNT_COMPANY` del
+terminal Slave. `InpPortfolioAlias` es obligatorio: el EA no arranca sin él.
+`InpSlaveID`, canal, owner, nick y perfil son datos internos y no se muestran
+en Telegram.
 
 Después de los IDs, el mensaje contiene uno o más bloques `PROBLEMA` y termina
 con `ACCIÓN`. No se incluye un resumen de contadores que obligue al usuario a
@@ -25,5 +28,9 @@ Los niveles son:
 - `🟡 COPYMONITOR — BLOQUEADO`: se detectó una discrepancia pero no es seguro
   ejecutar una acción automática.
 - `🔴 COPYMONITOR — CRÍTICO`: snapshot no disponible o acción fallida.
-- `🟢 COPYMONITOR — RESUELTO`: pendiente extra eliminada correctamente.
+- `🟢 COPYMONITOR — RESUELTO`: el problema avisado ya no existe, lo haya
+  corregido CopyMonitor o la propia copiadora.
+
+Cada problema emite un `ALERTA` al detectarse y un único `RESUELTO` al cerrarse.
+Una corrección automática fallida emite `CRÍTICO` con retcode y detalle.
 

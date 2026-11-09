@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_15_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_16_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.15"
-#property description "CopyMonitor Slave MT5 v1.15 MULTI"
+#property version "1.16"
+#property description "CopyMonitor Slave MT5 v1.16 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -23,6 +23,8 @@ input group "===== MODE / PROFILE ====="
 input ENUM_COPY_PROFILE InpProfile                    = PROFILE_GENERIC;
 input bool              InpMultiMaster                = false;
 input string            InpAccountNick                = "SLAVE";
+// Obligatorio: alias del portafolio que encabeza cada aviso de Telegram.
+input string            InpPortfolioAlias             = "";
 input string            InpSlaveID                    = "SLAVE_A";
 input int               InpMonitorSeconds             = 1;
 input bool              InpShowPanel                  = true;
@@ -69,8 +71,12 @@ input int  InpVolumeToleranceSteps                    = 1;
 
 input group "===== PENDING BEHAVIOR ====="
 // For this Prop setup, copied pendings are NOT expected.
-input bool InpMonitorPendingOrders                    = false;
-input bool InpExpectPendingCopies                     = false;
+input bool InpMonitorPendingOrders                    = true;
+input bool InpExpectPendingCopies                     = true;
+input bool InpAutoFixPositionSLTP                     = true;
+input bool InpAutoCreateMissingPending                = true;
+input bool InpAutoModifyPending                       = true;
+input int  InpAutoFixPersistSeconds                   = 5;
 // But an owned pending that is confirmed EXTRA may be deleted.
 input bool InpAutoDeleteExtraPending                  = true;
 input int  InpExtraPendingConfirmSeconds              = 2;
@@ -88,8 +94,8 @@ input string InpTelegramChatID                        = "";
 input int    InpTelegramTimeoutMs                     = 1200;
 input int    InpMismatchReminderSeconds               = 15;
 input bool   InpNotifySnapshotProblems                = false;
-input bool   InpNotifyDeleteSuccess                   = true;
-input bool   InpNotifyDeleteFailure                   = true;
+// ALERTA, RESUELTO y CRITICO de las correcciones automaticas son obligatorios:
+// el usuario debe saber siempre que cambio el EA en la cuenta Slave.
 
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
@@ -98,7 +104,7 @@ struct PosRec { ulong ticket; string symbol; int type; double vol; double price;
 struct OrdRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; };
 struct Snap
 {
-   string channel,nick;
+   string channel,nick,broker;
    long account,written;
    int open_total,pending_total;
    bool valid,fresh;
@@ -112,11 +118,23 @@ struct Owner
    double mult;
 };
 struct AlertState { string key; bool active; datetime last; };
-struct Candidate { ulong ticket; string channel; datetime first_seen; };
+struct Candidate { string key; datetime first_seen; datetime last_seen; };
+struct Blocked { string key; datetime last_seen; };
+
+// Resultado de un intento de creacion automatica de pendiente.
+#define CM_CREATE_BLOCKED    (-1)
+#define CM_CREATE_FAILED     0
+#define CM_CREATE_DONE       1
+#define CM_CREATE_UNVERIFIED 2
+
+// Las claves de estado llevan ticket, asi que una sesion larga acumularia
+// entradas muertas. Se descarta lo que nadie vuelve a tocar en este tiempo.
+#define CM_STATE_TTL_SECONDS 3600
 
 bool g_busy=false;
 AlertState g_alerts[];
 Candidate g_candidates[];
+Blocked g_create_blocked[];
 
 //---------------- utility ----------------
 string SafeFile(string s)
@@ -157,11 +175,22 @@ string AccountText(const long account)
    if(account<=0) return "NO DISPONIBLE";
    return StringFormat("%I64d",account);
 }
+string BrokerText(const string broker)
+{
+   string value=broker;
+   StringTrimLeft(value);
+   StringTrimRight(value);
+   if(value=="") return "NO DISPONIBLE";
+   return value;
+}
 string AlertHeader(const Snap &snap,const string level)
 {
    return level+"\n\n"+
+          "PORTAFOLIO ALIAS: "+InpPortfolioAlias+"\n"+
           "ID MASTER: "+AccountText(snap.account)+"\n"+
-          "ID SLAVE: "+AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN));
+          "BROKER MASTER: "+BrokerText(snap.broker)+"\n"+
+          "ID SLAVE: "+AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\n"+
+          "BROKER SLAVE: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY));
 }
 string PositionTypeText(const int type)
 {
@@ -358,6 +387,12 @@ void PersistAlert(const string k,const string msg)
    }
 }
 void ClearAlert(const string k){ int i=AlertIndex(k); if(i>=0) g_alerts[i].active=false; }
+void ResolveAlert(const string k,const string msg)
+{
+   int i=AlertIndex(k);
+   if(i>=0 && g_alerts[i].active) Tg(msg);
+   if(i>=0) g_alerts[i].active=false;
+}
 
 //---------------- snapshot ----------------
 void AddPos(PosRec &a[],const PosRec &x){ int n=ArraySize(a); ArrayResize(a,n+1); a[n]=x; }
@@ -365,7 +400,7 @@ void AddOrd(OrdRec &a[],const OrdRec &x){ int n=ArraySize(a); ArrayResize(a,n+1)
 
 bool ReadSnap(const string channel,Snap &s)
 {
-   s.channel=channel;s.nick="";s.account=0;s.written=0;s.open_total=0;s.pending_total=0;s.valid=false;s.fresh=false;
+   s.channel=channel;s.nick="";s.broker="";s.account=0;s.written=0;s.open_total=0;s.pending_total=0;s.valid=false;s.fresh=false;
    ArrayResize(s.pos,0); ArrayResize(s.ord,0);
 
    int h=FileOpen(SnapFile(channel),FILE_COMMON|FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
@@ -376,10 +411,13 @@ bool ReadSnap(const string channel,Snap &s)
    {
       string line=FileReadString(h); if(line=="")continue;
       string p[]; int n=StringSplit(line,'|',p); if(n<=0)continue;
-      if(p[0]=="META" && n>=8 && p[1]=="1" && !meta)
+      if(p[0]=="META" && n>=8 && (p[1]=="1" || p[1]=="2") && !meta)
       {
          s.written=(long)StringToInteger(p[2]);s.channel=p[3];s.nick=p[4];s.account=(long)StringToInteger(p[5]);
-         s.open_total=(int)StringToInteger(p[6]);s.pending_total=(int)StringToInteger(p[7]);meta=true;
+         s.open_total=(int)StringToInteger(p[6]);s.pending_total=(int)StringToInteger(p[7]);
+         // El broker solo viaja en el esquema 2; un Master antiguo lo deja vacio.
+         s.broker=(n>=9)?p[8]:"";
+         meta=true;
       }
       else if(p[0]=="POS" && n>=8)
       {
@@ -647,8 +685,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
       if(sl_bad || tp_bad)
       {
-         problems=true;
-         details+=
+         string problem_detail=
             "\n\nPROBLEMA:\nLa posición copiada tiene valores diferentes.\n\n"+
             "Estado: POSICIÓN ACTIVA\n"+
             "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
@@ -657,14 +694,58 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n";
 
          if(sl_bad)
-            details+=
+            problem_detail+=
                "\nSL Master: "+StopText(snap.pos[i].sl,"SIN SL")+
                "\nSL Slave: "+StopText(sp[best].sl,"SIN SL");
 
          if(tp_bad)
-            details+=
+            problem_detail+=
                "\nTP Master: "+StopText(snap.pos[i].tp,"SIN TP")+
                "\nTP Slave: "+StopText(sp[best].tp,"SIN TP");
+
+         string suffix=o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket)+
+                       "|"+StringFormat("%I64u",sp[best].ticket);
+         string alert_key="SLTP|"+suffix;
+         string fix_key="FIXSLTP|"+suffix;
+         string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+problem_detail+
+            "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.";
+         PersistAlert(alert_key,alert);
+
+         if(InpAutoFixPositionSLTP &&
+            ConfirmProblem(fix_key,InpAutoFixPersistSeconds))
+         {
+            double target_sl=InpCheckStopLoss ? snap.pos[i].sl : sp[best].sl;
+            double target_tp=InpCheckTakeProfit ? snap.pos[i].tp : sp[best].tp;
+            if(FixPositionStops(sp[best].ticket,target_sl,target_tp))
+            {
+               Tg(AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+problem_detail+
+                  "\n\nACCIÓN AUTOMÁTICA:\nSL y TP corregidos correctamente en la cuenta Slave.");
+               ClearAlert(alert_key);
+               RemoveProblem(fix_key);
+            }
+            else
+            {
+               PersistAlert("FAIL|"+alert_key,
+                  AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+problem_detail+
+                  "\n\nACCIÓN AUTOMÁTICA:\nNo se pudieron corregir SL y TP."+
+                  TradeFailureDetails());
+               RemoveProblem(fix_key);
+            }
+         }
+      }
+      else
+      {
+         string suffix=o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket)+
+                       "|"+StringFormat("%I64u",sp[best].ticket);
+         ResolveAlert("SLTP|"+suffix,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nLos valores SL y TP de la posición ya coinciden."+
+            "\n\nEstado: POSICIÓN ACTIVA\nTipo: "+PositionTypeText(snap.pos[i].type)+
+            "\nSímbolo: "+sp[best].symbol+
+            "\nTicket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+
+            "\nTicket Slave: "+StringFormat("%I64u",sp[best].ticket));
+         ClearAlert("FAIL|SLTP|"+suffix);
+         RemoveProblem("FIXSLTP|"+suffix);
       }
    }
 
@@ -695,7 +776,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
       string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+details;
       msg+="\n\nACCIÓN:\nRevisar la cuenta Slave "+
            AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".";
-      msg+="\nCopyMonitor no modifica posiciones automáticamente.";
+      msg+="\nCopyMonitor no abre ni cierra posiciones automáticamente.";
 
       PersistAlert(key,msg);
    }
@@ -711,25 +792,54 @@ bool OrdCompatible(const Owner &o,const OrdRec &m,const OrdRec &s)
    if(!SymbolEq(o.channel,m.symbol,s.symbol))return false;
    if(m.type!=s.type)return false;
    if(!VolEq(s.symbol,s.vol,m.vol*o.mult))return false;
-   if(MathAbs(m.price-s.price)>InpPendingPriceTolerancePoints*PointOf(s.symbol))return false;
    return true;
 }
-int CandIndex(ulong tk)
+int CandIndex(const string key)
 {
-   for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].ticket==tk)return i;
+   for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].key==key)return i;
    return -1;
 }
-bool ConfirmExtra(ulong tk,const string ch)
+bool ConfirmProblem(const string key,const int seconds)
 {
-   datetime now=TimeLocal();int i=CandIndex(tk);
-   if(i<0){i=ArraySize(g_candidates);ArrayResize(g_candidates,i+1);g_candidates[i].ticket=tk;g_candidates[i].channel=ch;g_candidates[i].first_seen=now;return InpExtraPendingConfirmSeconds<=0;}
-   if(g_candidates[i].channel!=ch){g_candidates[i].channel=ch;g_candidates[i].first_seen=now;return false;}
-   return (now-g_candidates[i].first_seen)>=InpExtraPendingConfirmSeconds;
+   datetime now=TimeLocal();int i=CandIndex(key);
+   if(i<0)
+   {
+      i=ArraySize(g_candidates);ArrayResize(g_candidates,i+1);
+      g_candidates[i].key=key;g_candidates[i].first_seen=now;g_candidates[i].last_seen=now;
+      return seconds<=0;
+   }
+   g_candidates[i].last_seen=now;
+   return (now-g_candidates[i].first_seen)>=seconds;
 }
-void RemoveCand(ulong tk)
+void RemoveProblem(const string key)
 {
-   int i=CandIndex(tk);if(i<0)return;int n=ArraySize(g_candidates);
+   int i=CandIndex(key);if(i<0)return;int n=ArraySize(g_candidates);
    for(int j=i;j<n-1;j++)g_candidates[j]=g_candidates[j+1];ArrayResize(g_candidates,n-1);
+}
+int BlockedIndex(const string key)
+{
+   for(int i=0;i<ArraySize(g_create_blocked);i++)if(g_create_blocked[i].key==key)return i;
+   return -1;
+}
+// Una orden enviada que el monitor no reconoce como copia propia no se puede
+// volver a intentar: cada ventana crearia otra pendiente duplicada.
+void BlockCreate(const string key)
+{
+   int i=BlockedIndex(key);
+   if(i<0){i=ArraySize(g_create_blocked);ArrayResize(g_create_blocked,i+1);g_create_blocked[i].key=key;}
+   g_create_blocked[i].last_seen=TimeLocal();
+}
+bool IsCreateBlocked(const string key)
+{
+   int i=BlockedIndex(key);
+   if(i<0)return false;
+   g_create_blocked[i].last_seen=TimeLocal();
+   return true;
+}
+void UnblockCreate(const string key)
+{
+   int i=BlockedIndex(key);if(i<0)return;int n=ArraySize(g_create_blocked);
+   for(int j=i;j<n-1;j++)g_create_blocked[j]=g_create_blocked[j+1];ArrayResize(g_create_blocked,n-1);
 }
 bool StillOwnedPending(const Owner &o,ulong tk,OrdRec &x)
 {
@@ -740,6 +850,121 @@ bool StillOwnedPending(const Owner &o,ulong tk,OrdRec &x)
    if(!OwnerCommentMatch(o,OrderGetString(ORDER_COMMENT)))return false;
    x.ticket=tk;x.symbol=symbol;x.type=(int)t;x.vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
    x.price=OrderGetDouble(ORDER_PRICE_OPEN);x.sl=OrderGetDouble(ORDER_SL);x.tp=OrderGetDouble(ORDER_TP);return true;
+}
+bool TradeRequestSucceeded(const bool sent)
+{
+   if(!sent) return false;
+   uint code=g_trade.ResultRetcode();
+   return code==TRADE_RETCODE_DONE || code==TRADE_RETCODE_PLACED ||
+          code==TRADE_RETCODE_DONE_PARTIAL || code==TRADE_RETCODE_NO_CHANGES;
+}
+string TradeFailureDetails()
+{
+   return "\nRetcode: "+IntegerToString((int)g_trade.ResultRetcode())+
+          "\nDetalle: "+g_trade.ResultRetcodeDescription()+
+          "\nError MQL: "+IntegerToString(GetLastError());
+}
+bool FixPositionStops(const ulong ticket,const double sl,const double tp)
+{
+   ResetLastError();
+   if(!TradeRequestSucceeded(g_trade.PositionModify(ticket,sl,tp))) return false;
+   if(!PositionSelectByTicket(ticket)) return false;
+   string symbol=PositionGetString(POSITION_SYMBOL);
+   double tol=InpSLTPTolerancePoints*PointOf(symbol);
+   return StopEq(PositionGetDouble(POSITION_SL),sl,tol) &&
+          StopEq(PositionGetDouble(POSITION_TP),tp,tol);
+}
+bool CreatablePendingType(const int type)
+{
+   return type==ORDER_TYPE_BUY_LIMIT || type==ORDER_TYPE_SELL_LIMIT ||
+          type==ORDER_TYPE_BUY_STOP  || type==ORDER_TYPE_SELL_STOP;
+}
+int CreatePendingCopy(const Owner &o,const OrdRec &master,ulong &created_ticket,string &blocked_reason)
+{
+   created_ticket=0;
+   blocked_reason="";
+   string symbol=ExpectedSlaveSymbol(o.channel,master.symbol);
+
+   // Crear algo que esta instancia no volveria a ver como propio produciria una
+   // copia nueva en cada ventana de persistencia.
+   if(!SlaveSymbolAllowed(symbol))
+   {
+      blocked_reason="El simbolo esperado esta excluido por los filtros de esta instancia.";
+      return CM_CREATE_BLOCKED;
+   }
+   if(!SymbolSelect(symbol,true))
+   {
+      blocked_reason="El simbolo esperado no esta disponible en el terminal Slave.";
+      return CM_CREATE_BLOCKED;
+   }
+   if(!CreatablePendingType(master.type))
+   {
+      blocked_reason="El tipo de orden pendiente del Master no se crea automaticamente.";
+      return CM_CREATE_BLOCKED;
+   }
+
+   double volume=ExpectedSlaveVolume(symbol,master.vol,o.mult);
+   if(volume<=0)
+   {
+      blocked_reason="El volumen Slave calculado no es valido para este simbolo.";
+      return CM_CREATE_BLOCKED;
+   }
+
+   g_trade.SetTypeFillingBySymbol(symbol);
+   ResetLastError();
+
+   bool sent=false;
+   if(master.type==ORDER_TYPE_BUY_LIMIT)
+      sent=g_trade.BuyLimit(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   else if(master.type==ORDER_TYPE_SELL_LIMIT)
+      sent=g_trade.SellLimit(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   else if(master.type==ORDER_TYPE_BUY_STOP)
+      sent=g_trade.BuyStop(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   else
+      sent=g_trade.SellStop(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+
+   created_ticket=g_trade.ResultOrder();
+   if(!TradeRequestSucceeded(sent) || created_ticket==0)
+      return CM_CREATE_FAILED;
+
+   OrdRec live;
+   if(!StillOwnedPending(o,created_ticket,live))
+      return CM_CREATE_UNVERIFIED;
+
+   return CM_CREATE_DONE;
+}
+bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const ulong slave_ticket)
+{
+   OrdRec live;
+   if(!StillOwnedPending(o,slave_ticket,live)) return false;
+   ENUM_ORDER_TYPE_TIME time_type=(ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+   datetime expiration=(datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+   double stoplimit=OrderGetDouble(ORDER_PRICE_STOPLIMIT);
+   ResetLastError();
+   bool sent=g_trade.OrderModify(slave_ticket,master.price,master.sl,master.tp,
+                                 time_type,expiration,stoplimit);
+   if(!TradeRequestSucceeded(sent) || !OrderSelect(slave_ticket)) return false;
+   double tol=InpSLTPTolerancePoints*PointOf(live.symbol);
+   return MathAbs(OrderGetDouble(ORDER_PRICE_OPEN)-master.price)<=
+             InpPendingPriceTolerancePoints*PointOf(live.symbol) &&
+          StopEq(OrderGetDouble(ORDER_SL),master.sl,tol) &&
+          StopEq(OrderGetDouble(ORDER_TP),master.tp,tol);
+}
+void ResolveRemovedExtraPendings(const Owner &o,const Snap &snap)
+{
+   string prefix="PEXTRA|"+o.channel+"|";
+   for(int i=0;i<ArraySize(g_alerts);i++)
+   {
+      if(!g_alerts[i].active || StringFind(g_alerts[i].key,prefix)!=0) continue;
+      ulong ticket=(ulong)StringToInteger(StringSubstr(g_alerts[i].key,StringLen(prefix)));
+      if(ticket>0 && OrderSelect(ticket)) continue;
+      ResolveAlert(g_alerts[i].key,
+         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+         "\n\nPROBLEMA RESUELTO:\nLa orden pendiente extra ya no existe en la cuenta Slave."+
+         "\nTicket Slave: "+StringFormat("%I64u",ticket));
+      ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+StringFormat("%I64u",ticket));
+      RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",ticket));
+   }
 }
 void CheckPending(const Owner &o,const Snap &snap)
 {
@@ -781,8 +1006,10 @@ void CheckPending(const Owner &o,const Snap &snap)
       if(best>=0)
       {
          slave_protected[best]=true;
-         RemoveCand(so[best].ticket);
+         RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
          ClearAlert("PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
          ClearAlert("PAMB|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
@@ -824,11 +1051,84 @@ void CheckPending(const Owner &o,const Snap &snap)
       {
          master_matched[m]=true;
          slave_protected[best]=true;
-         RemoveCand(so[best].ticket);
+         string matched_create="CREATE|"+o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
+         RemoveProblem(matched_create);
+         UnblockCreate(matched_create);
+         ClearAlert("FAIL|"+matched_create);
+         ClearAlert("PBLOCK|"+matched_create);
+         RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
          ClearAlert("PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
          ClearAlert("PAMB|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
+
+         double point=PointOf(so[best].symbol);
+         double stop_tol=InpSLTPTolerancePoints*point;
+         bool price_bad=MathAbs(snap.ord[m].price-so[best].price)>
+                        InpPendingPriceTolerancePoints*point;
+         bool sl_bad=InpCheckStopLoss && !StopEq(snap.ord[m].sl,so[best].sl,stop_tol);
+         bool tp_bad=InpCheckTakeProfit && !StopEq(snap.ord[m].tp,so[best].tp,stop_tol);
+         string suffix=o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket)+
+                       "|"+StringFormat("%I64u",so[best].ticket);
+         string alert_key="PVALUES|"+suffix;
+         string fix_key="FIXPEND|"+suffix;
+
+         if(InpMonitorPendingOrders && (price_bad || sl_bad || tp_bad))
+         {
+            string detail=
+               "\n\nPROBLEMA:\nLa orden pendiente copiada tiene valores diferentes.\n\n"+
+               "Estado: ORDEN PENDIENTE\n"+
+               "Tipo: "+OrderTypeText(snap.ord[m].type)+"\n"+
+               "Símbolo: "+so[best].symbol+"\n"+
+               "Ticket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+"\n"+
+               "Ticket Slave: "+StringFormat("%I64u",so[best].ticket);
+            if(price_bad)
+               detail+="\n\nEntrada Master: "+PriceText(snap.ord[m].price)+
+                       "\nEntrada Slave: "+PriceText(so[best].price);
+            if(sl_bad)
+               detail+="\nSL Master: "+StopText(snap.ord[m].sl,"SIN SL")+
+                       "\nSL Slave: "+StopText(so[best].sl,"SIN SL");
+            if(tp_bad)
+               detail+="\nTP Master: "+StopText(snap.ord[m].tp,"SIN TP")+
+                       "\nTP Slave: "+StopText(so[best].tp,"SIN TP");
+
+            PersistAlert(alert_key,
+               AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
+               "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.");
+
+            if(InpAutoModifyPending && ConfirmProblem(fix_key,InpAutoFixPersistSeconds))
+            {
+               if(ModifyPendingCopy(o,snap.ord[m],so[best].ticket))
+               {
+                  Tg(AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
+                     "\n\nACCIÓN AUTOMÁTICA:\nPrecio, SL y TP corregidos correctamente.");
+                  ClearAlert(alert_key);
+                  RemoveProblem(fix_key);
+               }
+               else
+               {
+                  PersistAlert("FAIL|"+alert_key,
+                     AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
+                     "\n\nACCIÓN AUTOMÁTICA:\nNo se pudo modificar la orden pendiente."+
+                     TradeFailureDetails());
+                  RemoveProblem(fix_key);
+               }
+            }
+         }
+         else
+         {
+            ResolveAlert(alert_key,
+               AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+               "\n\nPROBLEMA RESUELTO:\nLa orden pendiente ya tiene el precio, SL y TP correctos."+
+               "\n\nEstado: ORDEN PENDIENTE\nTipo: "+OrderTypeText(snap.ord[m].type)+
+               "\nSímbolo: "+so[best].symbol+
+               "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+
+               "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket));
+            ClearAlert("FAIL|"+alert_key);
+            RemoveProblem(fix_key);
+         }
       }
    }
 
@@ -852,16 +1152,74 @@ void CheckPending(const Owner &o,const Snap &snap)
       if(missing_pending>0)
       {
          string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+missing_details;
-         msg+="\n\nACCIÓN:\nCrear o revisar estas órdenes en la cuenta Slave "+
-              AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".";
-         msg+="\nCopyMonitor no abre órdenes automáticamente.";
+         msg+="\n\nACCIÓN:\nEsperando que el problema persista antes de crear la orden automáticamente.";
          PersistAlert(
             "PMISS|"+o.channel,
             msg);
+
+         bool created_any=false;
+         for(int m=0;m<ArraySize(snap.ord);m++)
+         {
+            if(master_matched[m]) continue;
+            string create_key="CREATE|"+o.channel+"|"+
+                              StringFormat("%I64u",snap.ord[m].ticket);
+            if(!InpAutoCreateMissingPending || IsCreateBlocked(create_key) ||
+               !ConfirmProblem(create_key,InpAutoFixPersistSeconds))
+               continue;
+
+            ulong created_ticket=0;
+            string blocked_reason="";
+            string detail="\n\nPROBLEMA:\nFaltaba la copia de una orden pendiente.\n\n"+
+                          MasterPendingDetails(o,snap.ord[m]);
+            int created=CreatePendingCopy(o,snap.ord[m],created_ticket,blocked_reason);
+            RemoveProblem(create_key);
+
+            if(created==CM_CREATE_DONE)
+            {
+               Tg(AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
+                  "\nTicket Slave creado: "+StringFormat("%I64u",created_ticket)+
+                  "\n\nACCIÓN AUTOMÁTICA:\nLa orden pendiente fue creada correctamente.");
+               ClearAlert("FAIL|"+create_key);
+               ClearAlert("PBLOCK|"+create_key);
+               created_any=true;
+            }
+            else if(created==CM_CREATE_UNVERIFIED)
+            {
+               // La orden existe pero el monitor no la reconoce como copia
+               // propia. Reintentar duplicaria la pendiente en cada ventana.
+               BlockCreate(create_key);
+               PersistAlert("FAIL|"+create_key,
+                  AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
+                  "\nTicket Slave creado: "+StringFormat("%I64u",created_ticket)+
+                  "\n\nACCIÓN AUTOMÁTICA:\nLa orden se envió pero no se reconoce como"+
+                  " copia de este canal.\nRevisarla manualmente: la creación automática de"+
+                  " este ticket Master queda bloqueada para no duplicarla."+
+                  TradeFailureDetails());
+            }
+            else if(created==CM_CREATE_BLOCKED)
+            {
+               PersistAlert("PBLOCK|"+create_key,
+                  AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
+                  "\n\nACCIÓN:\nNo se puede crear la copia automáticamente.\n"+blocked_reason);
+            }
+            else
+            {
+               PersistAlert("FAIL|"+create_key,
+                  AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
+                  "\n\nACCIÓN AUTOMÁTICA:\nNo se pudo crear la orden pendiente."+
+                  TradeFailureDetails());
+            }
+         }
+
+         // El aviso agrupado ya se resolvio con el mensaje de cada creacion.
+         if(created_any)
+            ClearAlert("PMISS|"+o.channel);
       }
       else
       {
-         ClearAlert("PMISS|"+o.channel);
+         ResolveAlert("PMISS|"+o.channel,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nLas órdenes pendientes esperadas ya aparecen en la cuenta Slave.");
       }
    }
    else
@@ -901,27 +1259,22 @@ void CheckPending(const Owner &o,const Snap &snap)
          "PAMB|"+o.channel+"|"+
          StringFormat("%I64u",so[s].ticket));
 
-      if(!ConfirmExtra(so[s].ticket,o.channel))
-         continue;
-
+      string delete_problem="DELETE|"+o.channel+"|"+StringFormat("%I64u",so[s].ticket);
       string key=
          "PEXTRA|"+o.channel+"|"+
          StringFormat("%I64u",so[s].ticket);
+      string detail=
+         "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
+         SlavePendingDetails(so[s]);
+      string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
+         "\n\nACCIÓN:\nEsperando que el problema persista antes de eliminarla automáticamente.";
+      PersistAlert(key,alert);
 
       if(!InpAutoDeleteExtraPending)
-      {
-         string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
-            "\n\nPROBLEMA:\nExiste una orden pendiente extra en el Slave.\n\n"+
-            SlavePendingDetails(so[s])+
-            "\n\nACCIÓN:\nRevisar la cuenta Slave "+
-            AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"."+
-            "\nEl borrado automático está desactivado.";
-         PersistAlert(
-            key,
-            msg);
-
          continue;
-      }
+
+      if(!ConfirmProblem(delete_problem,InpExtraPendingConfirmSeconds))
+         continue;
 
       // Final safety re-check.
       OrdRec live;
@@ -932,7 +1285,7 @@ void CheckPending(const Owner &o,const Snap &snap)
       ResetLastError();
       bool ok=g_trade.OrderDelete(so[s].ticket);
 
-      string detail=
+      detail=
          "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
          SlavePendingDetails(live);
 
@@ -941,10 +1294,9 @@ void CheckPending(const Owner &o,const Snap &snap)
          string msg=AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
             "\n\nACCIÓN:\nLa orden pendiente fue eliminada correctamente.";
 
-         if(InpNotifyDeleteSuccess)
-            Tg(msg);
+         Tg(msg);
 
-         RemoveCand(so[s].ticket);
+         RemoveProblem(delete_problem);
          ClearAlert(key);
       }
       else
@@ -957,10 +1309,11 @@ void CheckPending(const Owner &o,const Snap &snap)
             "\nDetalle: "+g_trade.ResultRetcodeDescription()+
             "\nError MQL: "+IntegerToString(GetLastError());
 
-         if(InpNotifyDeleteFailure)
-            PersistAlert(key,msg);
+         PersistAlert("FAIL|"+key,msg);
+         RemoveProblem(delete_problem);
       }
    }
+   ResolveRemovedExtraPendings(o,snap);
 }
 
 //---------------- panel/cycle ----------------
@@ -985,14 +1338,17 @@ void ProcessOwner(const Owner &o,const Snap &s)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.15 MULTI\n";
-   p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n\n";
+   string p="COPYMONITOR SLAVE v1.16 MULTI\n";
+   p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
+   p+="Portafolio: "+InpPortfolioAlias+"\n";
+   p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n\n";
    for(int i=0;i<ArraySize(o);i++)
    {
       PosRec sp[];SlavePosForOwner(o[i],sp);
       p+=o[i].channel+" | "+ProfileText(o[i].profile);
       if(InpMultiMaster)p+=" | "+o[i].comment;
       p+=" | "+(!s[i].valid?"NO DATA":(!s[i].fresh?"STALE":"ONLINE"))+"\n";
+      p+="  Broker Master: "+BrokerText(s[i].broker)+"\n";
       p+="  Open M/S: "+IntegerToString(s[i].open_total)+"/"+IntegerToString(ArraySize(sp))+"\n";
    }
    p+="\nIgnored MASTER tickets: "+(InpIgnoreMasterTickets=="" ? "NONE" : InpIgnoreMasterTickets)+"\n";
@@ -1003,22 +1359,46 @@ void Panel(const Owner &o[],const Snap &s[])
    p+="Extra pending auto-delete: "+(InpAutoDeleteExtraPending?"YES":"NO");
    Comment(p);
 }
+// Descarta claves de tickets que ya nadie evalua. Un aviso activo y un problema
+// en cuenta atras se tocan en cada ciclo, asi que nunca se pierden.
+void PruneState()
+{
+   datetime now=TimeLocal();
+
+   for(int i=ArraySize(g_candidates)-1;i>=0;i--)
+      if((now-g_candidates[i].last_seen)>CM_STATE_TTL_SECONDS)
+         RemoveProblem(g_candidates[i].key);
+
+   for(int i=ArraySize(g_create_blocked)-1;i>=0;i--)
+      if((now-g_create_blocked[i].last_seen)>CM_STATE_TTL_SECONDS)
+         UnblockCreate(g_create_blocked[i].key);
+
+   for(int i=ArraySize(g_alerts)-1;i>=0;i--)
+   {
+      if(g_alerts[i].active || (now-g_alerts[i].last)<=CM_STATE_TTL_SECONDS)
+         continue;
+      int n=ArraySize(g_alerts);
+      for(int j=i;j<n-1;j++)g_alerts[j]=g_alerts[j+1];
+      ArrayResize(g_alerts,n-1);
+   }
+}
 void Cycle()
 {
    if(g_busy)return;g_busy=true;
    Owner o[];if(!LoadOwners(o)){g_busy=false;return;}
    Snap s[];ArrayResize(s,ArraySize(o));
    for(int i=0;i<ArraySize(o);i++){ReadSnap(o[i].channel,s[i]);ProcessOwner(o[i],s[i]);}
+   PruneState();
    Panel(o,s);g_busy=false;
 }
 bool Validate()
 {
-   if(InpSlaveID=="" || InpMonitorSeconds<1 ||
+   if(InpSlaveID=="" || InpPortfolioAlias=="" || InpMonitorSeconds<1 ||
       InpSnapshotStaleSeconds<InpMonitorSeconds ||
       InpMismatchReminderSeconds<1 || InpTelegramTimeoutMs<1 ||
       InpEntryPriceTolerancePoints<0 || InpSLTPTolerancePoints<0 ||
       InpVolumeToleranceSteps<0 || InpPendingPriceTolerancePoints<0 ||
-      InpExtraPendingConfirmSeconds<0)
+      InpExtraPendingConfirmSeconds<0 || InpAutoFixPersistSeconds<0)
       return false;
    Owner o[];return LoadOwners(o);
 }
