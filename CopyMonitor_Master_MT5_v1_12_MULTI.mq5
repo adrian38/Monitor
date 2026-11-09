@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property strict
 #property version   "1.12"
-#property description "CopyMonitor Master MT5 v1.10 MULTI"
+#property description "CopyMonitor Master MT5 v1.12 MULTI"
 
 input group "===== MASTER IDENTITY ====="
 input string InpAccountNick         = "MASTER_280";
@@ -169,7 +169,7 @@ bool Publish()
 void Panel()
 {
    if(!InpShowPanel){ Comment(""); return; }
-   string s="COPYMONITOR MASTER v1.10 MULTI\n";
+   string s="COPYMONITOR MASTER v1.12 MULTI\n";
    s+="Nick: "+InpAccountNick+"\nChannel: "+InpChannelID+"\n";
    s+="Open: "+IntegerToString(CountPos())+"\n";
    s+="Pending: "+IntegerToString(CountPend())+"\n";

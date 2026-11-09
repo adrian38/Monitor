@@ -15,6 +15,11 @@ El separador es `|`, los saltos son CRLF y los valores textuales se sanejan
 antes de escribir. Cualquier evolución del esquema debe mantener compatibilidad
 o actualizar Master y Slave conjuntamente.
 
+El lector sólo acepta la versión de esquema `1`, un único `META`, un `END` y
+recuentos declarados que coincidan exactamente con los registros `POS` y `ORD`.
+Un snapshot parcial o incoherente queda inválido y suspende las comparaciones y
+el borrado de pendientes.
+
 ## Matching y ownership
 
 - Single-master puede usar un comentario Slave vacío; multi-master exige un

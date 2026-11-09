@@ -8,7 +8,7 @@
 //+------------------------------------------------------------------+
 #property strict
 #property version "1.14"
-#property description "CopyMonitor Slave MT5 v1.10 MULTI"
+#property description "CopyMonitor Slave MT5 v1.14 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -313,7 +313,13 @@ void PersistAlert(const string k,const string msg)
    if(i<0){ i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1); g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0; }
    bool due=!g_alerts[i].active || (now-g_alerts[i].last)>=InpMismatchReminderSeconds;
    g_alerts[i].active=true;
-   if(due && Tg(msg)) g_alerts[i].last=now;
+   if(due)
+   {
+      // Throttle attempts as well as successful deliveries. Otherwise a
+      // Telegram outage causes one WebRequest per monitor cycle.
+      g_alerts[i].last=now;
+      Tg(msg);
+   }
 }
 void ClearAlert(const string k){ int i=AlertIndex(k); if(i>=0) g_alerts[i].active=false; }
 
@@ -334,7 +340,7 @@ bool ReadSnap(const string channel,Snap &s)
    {
       string line=FileReadString(h); if(line=="")continue;
       string p[]; int n=StringSplit(line,'|',p); if(n<=0)continue;
-      if(p[0]=="META" && n>=8)
+      if(p[0]=="META" && n>=8 && p[1]=="1" && !meta)
       {
          s.written=(long)StringToInteger(p[2]);s.channel=p[3];s.nick=p[4];s.account=(long)StringToInteger(p[5]);
          s.open_total=(int)StringToInteger(p[6]);s.pending_total=(int)StringToInteger(p[7]);meta=true;
@@ -349,10 +355,16 @@ bool ReadSnap(const string channel,Snap &s)
          OrdRec x; x.ticket=(ulong)StringToInteger(p[1]);x.symbol=p[2];x.type=(int)StringToInteger(p[3]);
          x.vol=StringToDouble(p[4]);x.price=StringToDouble(p[5]);x.sl=StringToDouble(p[6]);x.tp=StringToDouble(p[7]);AddOrd(s.ord,x);
       }
-      else if(p[0]=="END") en=true;
+      else if(p[0]=="END")
+      {
+         en=true;
+         break;
+      }
    }
    FileClose(h);
-   s.valid=meta&&en&&s.channel==channel;
+   s.valid=meta&&en&&s.channel==channel &&
+           s.open_total==ArraySize(s.pos) &&
+           s.pending_total==ArraySize(s.ord);
    if(!s.valid)return false;
    long age=(long)TimeLocal()-s.written;
    s.fresh=age>=0 && age<=InpSnapshotStaleSeconds;
@@ -667,32 +679,71 @@ void CheckPending(const Owner &o,const Snap &snap)
          RemoveCand(so[best].ticket);
          ClearAlert("PEXTRA|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
+         ClearAlert("PAMB|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
       }
    }
 
-   // Missing-pending monitoring, when explicitly enabled, only counts
-   // NON-IGNORED Master pending tickets.
-   if(InpMonitorPendingOrders && InpExpectPendingCopies)
+   // Pair each monitored Master pending with at most one Slave pending.
+   // Count-only comparison is insufficient: a wrong order can hide a missing
+   // order, and two Slave orders must not reuse the same Master order.
+   bool master_matched[];
+   ArrayResize(master_matched,ArraySize(snap.ord));
+   ArrayInitialize(master_matched,false);
+
+   for(int m=0;m<ArraySize(snap.ord);m++)
    {
-      int expected_master=0;
+      if(MasterTicketIgnored(o.channel,snap.ord[m].ticket))
+      {
+         master_matched[m]=true;
+         continue;
+      }
 
-      for(int m=0;m<ArraySize(snap.ord);m++)
-         if(!MasterTicketIgnored(o.channel,snap.ord[m].ticket))
-            expected_master++;
-
-      int available_slave=0;
+      int best=-1;
+      double best_delta=1e100;
 
       for(int s=0;s<ArraySize(so);s++)
-         if(!slave_protected[s])
-            available_slave++;
+      {
+         if(slave_protected[s] || !OrdCompatible(o,snap.ord[m],so[s]))
+            continue;
 
-      if(expected_master>available_slave)
+         double delta=MathAbs(snap.ord[m].price-so[s].price);
+         if(delta<best_delta)
+         {
+            best_delta=delta;
+            best=s;
+         }
+      }
+
+      if(best>=0)
+      {
+         master_matched[m]=true;
+         slave_protected[best]=true;
+         RemoveCand(so[best].ticket);
+         ClearAlert("PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ClearAlert("PAMB|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+      }
+   }
+
+   // Missing-pending monitoring, when explicitly enabled, reports actual
+   // unmatched orders rather than comparing collection sizes.
+   if(InpMonitorPendingOrders && InpExpectPendingCopies)
+   {
+      int missing_pending=0;
+      for(int m=0;m<ArraySize(snap.ord);m++)
+         if(!master_matched[m])
+            missing_pending++;
+
+      if(missing_pending>0)
       {
          PersistAlert(
             "PMISS|"+o.channel,
             "PENDING ORDER MISSING IN SLAVE\n\n"+
             "Master: "+snap.nick+" ["+o.channel+"]\n"+
             "Slave: "+InpAccountNick+
+            "\nMissing copies: "+IntegerToString(missing_pending)+
             "\nExpected copies mode is ON."+
             "\nIgnored Master pending tickets are excluded."+
             "\nNo order will be opened automatically.");
@@ -712,29 +763,6 @@ void CheckPending(const Owner &o,const Snap &snap)
    {
       if(slave_protected[s])
          continue;
-
-      bool match=false;
-
-      // Match only against NON-IGNORED Master pending orders.
-      for(int m=0;m<ArraySize(snap.ord);m++)
-      {
-         if(MasterTicketIgnored(o.channel,snap.ord[m].ticket))
-            continue;
-
-         if(OrdCompatible(o,snap.ord[m],so[s]))
-         {
-            match=true;
-            break;
-         }
-      }
-
-      if(match)
-      {
-         RemoveCand(so[s].ticket);
-         ClearAlert("PEXTRA|"+o.channel+"|"+
-                    StringFormat("%I64u",so[s].ticket));
-         continue;
-      }
 
       // Conservative deletion rule:
       // if ANY Master pending exists (including ignored tickets), deletion
@@ -766,6 +794,10 @@ void CheckPending(const Owner &o,const Snap &snap)
 
          continue;
       }
+
+      ClearAlert(
+         "PAMB|"+o.channel+"|"+
+         StringFormat("%I64u",so[s].ticket));
 
       if(!ConfirmExtra(so[s].ticket,o.channel))
          continue;
@@ -876,7 +908,13 @@ void Cycle()
 }
 bool Validate()
 {
-   if(InpSlaveID==""||InpMonitorSeconds<1||InpSnapshotStaleSeconds<InpMonitorSeconds||InpMismatchReminderSeconds<1)return false;
+   if(InpSlaveID=="" || InpMonitorSeconds<1 ||
+      InpSnapshotStaleSeconds<InpMonitorSeconds ||
+      InpMismatchReminderSeconds<1 || InpTelegramTimeoutMs<1 ||
+      InpEntryPriceTolerancePoints<0 || InpSLTPTolerancePoints<0 ||
+      InpVolumeToleranceSteps<0 || InpPendingPriceTolerancePoints<0 ||
+      InpExtraPendingConfirmSeconds<0)
+      return false;
    Owner o[];return LoadOwners(o);
 }
 int OnInit()
