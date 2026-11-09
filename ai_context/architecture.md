@@ -4,7 +4,7 @@
 
 - `CopyMonitor_Master_MT5_v1_14_MULTI.mq5`: EA de sólo lectura operativa.
   Filtra posiciones y pendientes de la cuenta Master y publica un snapshot.
-- `CopyMonitor_Slave_MT5_v1_17_MULTI.mq5`: EA de monitorización. Lee uno o
+- `CopyMonitor_Slave_MT5_v1_19_MULTI.mq5`: EA de monitorización. Lee uno o
   varios snapshots, asigna operaciones por propietario, compara estado y emite
   diagnósticos o avisos. Puede borrar únicamente pendientes extra confirmadas.
 

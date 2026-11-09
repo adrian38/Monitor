@@ -71,6 +71,48 @@ exacta salvo el ruido de coma flotante.
 - Un aviso sobre un ticket que ya no existe se cierra con `RESUELTO`. Antes
   quedaba activo para siempre: ni se resolvía ni podía caducar.
 
+## Espera tras un envío fallido
+
+Hasta la v1.17 un fallo de Telegram se reintentaba en el ciclo siguiente, es
+decir cada segundo con `InpMonitorSeconds=1`. El límite de Telegram es por
+token y vive en su servidor, así que cada reintento renovaba la penalización en
+lugar de dejarla caducar: un incidente real produjo 648 fallos consecutivos en
+14 minutos, alternando `HTTP=429` y `err=5203`, sin un solo envío correcto y
+con la cola descartando avisos. `PersistAlert` ya limitaba la *generación* de
+avisos por esta razón, pero `TgFlush` reintroducía el problema un nivel más
+abajo al vaciar la cola.
+
+- Tras un fallo no se toca la red hasta `g_tg_next_try`, ni para la cola ni
+  para un aviso nuevo.
+- Un `429` trae en el cuerpo JSON el campo `retry_after`. Se respeta entero,
+  aunque supere `InpTelegramRetryMaxSeconds`: volver antes de tiempo es
+  exactamente lo que mantiene vivo el bloqueo.
+- Sin `retry_after` la espera arranca en `InpTelegramRetryBaseSeconds` y se
+  dobla con cada fallo consecutivo hasta `InpTelegramRetryMaxSeconds`.
+- Un envío correcto borra la racha y la espera.
+- El panel muestra los segundos que faltan para el próximo intento.
+
+La cola sigue siendo FIFO estricta y el desbordamiento descarta lo más antiguo.
+Un aviso nuevo espera detrás de los anteriores: es deliberado, porque adelantar
+mensajes rompería el orden `ALERTA` → `RESUELTO`.
+
+## Estado de avisos en disco
+
+`g_alerts` vivía sólo en memoria y el EA no escribía ningún fichero. Un
+reinicio —recompilar, recargar el gráfico, reiniciar el terminal— borraba qué
+problemas estaban avisados, y `ResolveAlert` no encontraba la clave: el
+`RESUELTO` de un problema avisado antes del reinicio no se enviaba nunca.
+
+- Los avisos activos se guardan en `CopyMonitorMulti\CM_ALERTS_<InpSlaveID>.txt`
+  dentro de la carpeta local del terminal, no en la común: el estado es de esta
+  instancia y dos Slave distintos no deben pisarse el fichero.
+- Se escribe sólo cuando entra o sale un aviso del conjunto activo, y en
+  `OnDeinit`. Volcar el fichero al refrescar una marca de tiempo lo reescribiría
+  en cada ciclo.
+- Se lee en `OnInit` antes del primer ciclo, de modo que un problema que siga
+  abierto se reconoce en vez de volver a avisarse.
+- `InpPersistAlertState` permite desactivarlo.
+
 ## Ajustes expuestos
 
 Todos los temporizadores y límites internos son `input` desde la v1.17, con el
@@ -78,13 +120,21 @@ valor que el EA usaba fijo como valor por defecto: `InpStateTTLSeconds`,
 `InpSnapshotReadAttempts`, `InpSnapshotReadRetryMs`,
 `InpMarketClosedRetrySeconds`, `InpTelegramChunkChars`, `InpTelegramQueueMax`,
 `InpTelegramSendsPerCycle` en el Slave, e `InpPublishFailLogSeconds` en el
-Master. Cada uno se valida en el arranque con un motivo en el log, y dos de esos
-límites protegen el ciclo completo:
+Master. La v1.19 añade `InpTelegramRetryBaseSeconds`,
+`InpTelegramRetryMaxSeconds` e `InpPersistAlertState`. Cada uno se valida en el
+arranque con un motivo en el log, y dos de esos límites protegen el ciclo
+completo:
 
 - los reintentos de lectura no pueden sumar más de 500 ms por canal, porque la
   pausa bloquea el hilo del EA;
 - `InpTelegramSendsPerCycle` por `InpTelegramTimeoutMs` no puede pasar de
-  5000 ms, para que vaciar la cola no atasque el ciclo.
+  15000 ms, para que vaciar la cola no atasque el ciclo.
+
+`InpTelegramTimeoutMs` pasa de 1200 a 5000 ms en la v1.19. Un POST con TLS a
+`api.telegram.org` no siempre cierra en poco más de un segundo, y el timeout
+corto convertía una respuesta lenta en un fallo que encolaba el aviso sin
+necesidad. El tope del producto sube de 5000 a 15000 ms porque, con la espera
+tras fallo, un ciclo largo deja de repetirse cada segundo.
 
 `CM_CHANNEL_MAX_LEN` y `CM_SNAPSHOT_SCHEMA` siguen siendo constantes: forman
 parte del contrato compartido con el otro EA, no son preferencias.

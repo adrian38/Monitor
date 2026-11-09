@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_17_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_19_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.17"
-#property description "CopyMonitor Slave MT5 v1.17 MULTI"
+#property version "1.19"
+#property description "CopyMonitor Slave MT5 v1.19 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -91,9 +91,15 @@ input int    InpSnapshotStaleSeconds                  = 5;
 input bool   InpEnableTelegram                        = true;
 input string InpTelegramBotToken                      = "";
 input string InpTelegramChatID                        = "";
-input int    InpTelegramTimeoutMs                     = 1200;
+// Un POST con TLS a api.telegram.org no siempre cierra en poco mas de un
+// segundo: un timeout corto convertia una respuesta lenta en un fallo y metia
+// el aviso en la cola de reintentos sin necesidad.
+input int    InpTelegramTimeoutMs                     = 5000;
 input int    InpMismatchReminderSeconds               = 15;
 input bool   InpNotifySnapshotProblems                = false;
+// Estado de avisos en disco. Sin el, un reinicio olvida que un problema estaba
+// avisado y el RESUELTO correspondiente no se envia nunca.
+input bool   InpPersistAlertState                     = true;
 // ALERTA, RESUELTO y CRITICO de las correcciones automaticas son obligatorios:
 // el usuario debe saber siempre que cambio el EA en la cuenta Slave.
 // InpNotifySnapshotProblems solo gobierna la falta transitoria de datos. Un
@@ -113,6 +119,11 @@ input int InpMarketClosedRetrySeconds                 = 60;
 input int InpTelegramChunkChars                       = 3000;
 input int InpTelegramQueueMax                         = 40;
 input int InpTelegramSendsPerCycle                    = 2;
+// Espera tras un envio fallido. Telegram limita por token y en el lado del
+// servidor: reintentar cada ciclo renueva la penalizacion en lugar de dejarla
+// caducar, asi que la espera arranca en la base y se dobla hasta el tope.
+input int InpTelegramRetryBaseSeconds                 = 5;
+input int InpTelegramRetryMaxSeconds                  = 300;
 
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
@@ -174,9 +185,18 @@ string       g_include_symbols[];
 string       g_exclude_symbols[];
 
 // Telegram: cola de reintento y ultimo error visible en el panel.
-string g_tg_queue[];
-string g_tg_last_error="";
-int    g_tg_dropped=0;
+string   g_tg_queue[];
+string   g_tg_last_error="";
+int      g_tg_dropped=0;
+// Backoff: momento a partir del cual se puede volver a intentar un envio y
+// racha de fallos consecutivos que determina cuanto se espera.
+datetime g_tg_next_try=0;
+int      g_tg_fail_streak=0;
+
+// El conjunto de avisos activos cambio y hay que volcarlo a disco. Solo se
+// marca al entrar o salir un aviso, no al refrescar su marca de tiempo: de lo
+// contrario se reescribiria el fichero en cada ciclo.
+bool     g_alerts_dirty=false;
 
 // Permiso de trading evaluado al principio de cada ciclo. Sin el, una
 // correccion fallaria con CRITICO en cada ventana en lugar de avisar una vez.
@@ -259,7 +279,10 @@ string BrokerText(const string broker)
 }
 string AlertHeader(const Snap &snap,const string level)
 {
+   // La hora de deteccion es imprescindible: un aviso que esperó en la cola se
+   // entrega tarde y sin ella es indistinguible de uno recien detectado.
    return level+"\n\n"+
+          "DETECTADO: "+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\n"+
           "PORTAFOLIO ALIAS: "+InpPortfolioAlias+"\n"+
           "ID MASTER: "+AccountText(snap.account)+"\n"+
           "BROKER MASTER: "+BrokerText(snap.broker)+"\n"+
@@ -598,6 +621,54 @@ bool TgConfigured()
 {
    return InpEnableTelegram && InpTelegramBotToken!="" && InpTelegramChatID!="";
 }
+// Telegram responde a un 429 con el numero de segundos que falta para poder
+// volver a escribir. Viene en el cuerpo JSON y es el unico dato fiable para
+// saber cuanto esperar: ignorarlo obliga a adivinar.
+int TgRetryAfterFromBody(const string body)
+{
+   int at=StringFind(body,"\"retry_after\"");
+   if(at<0) return 0;
+
+   int colon=StringFind(body,":",at);
+   if(colon<0) return 0;
+
+   return (int)StringToInteger(StringSubstr(body,colon+1,12));
+}
+// Un fallo no se reintenta en el ciclo siguiente. El limite de Telegram es por
+// token y vive en su servidor, asi que un reintento por segundo lo renueva sin
+// descanso y la penalizacion no caduca nunca.
+void TgBackoff(const int retry_after_seconds)
+{
+   g_tg_fail_streak++;
+
+   int wait;
+   if(retry_after_seconds>0)
+   {
+      // Lo que diga Telegram se respeta entero, aunque pase del tope local:
+      // volver antes de tiempo es justo lo que mantiene vivo el bloqueo.
+      wait=retry_after_seconds;
+   }
+   else
+   {
+      wait=InpTelegramRetryBaseSeconds;
+      for(int i=1;i<g_tg_fail_streak && wait<InpTelegramRetryMaxSeconds;i++)
+         wait*=2;
+      if(wait>InpTelegramRetryMaxSeconds) wait=InpTelegramRetryMaxSeconds;
+   }
+
+   if(wait<1) wait=1;
+   g_tg_next_try=TimeLocal()+wait;
+}
+// Mientras dure la espera no se toca la red: ni la cola ni un aviso nuevo.
+bool TgSendDue()
+{
+   return TimeLocal()>=g_tg_next_try;
+}
+int TgPendingSeconds()
+{
+   if(TgSendDue()) return 0;
+   return (int)(g_tg_next_try-TimeLocal());
+}
 // POST en lugar de GET: el texto viaja en el cuerpo y un aviso largo no depende
 // del limite de longitud de una URL.
 bool TgPost(const string msg)
@@ -617,14 +688,27 @@ bool TgPost(const string msg)
    int http=WebRequest("POST",url,
                        "Content-Type: application/x-www-form-urlencoded\r\n",
                        InpTelegramTimeoutMs,data,res,hdr);
+   int err=GetLastError();
+
    if(http==200)
    {
       g_tg_last_error="";
+      g_tg_fail_streak=0;
+      g_tg_next_try=0;
       return true;
    }
 
-   g_tg_last_error=StringFormat("HTTP=%d err=%d",http,GetLastError());
-   PrintFormat("[CM SLAVE] Telegram fail %s",g_tg_last_error);
+   g_tg_last_error=StringFormat("HTTP=%d err=%d",http,err);
+
+   // Solo el 429 trae retry_after. En los demas fallos el cuerpo no sirve y la
+   // espera la decide el backoff.
+   int retry_after=0;
+   if(http==429)
+      retry_after=TgRetryAfterFromBody(CharArrayToString(res,0,WHOLE_ARRAY,CP_UTF8));
+
+   TgBackoff(retry_after);
+   PrintFormat("[CM SLAVE] Telegram fail %s. Proximo intento en %d s. En cola: %d.",
+               g_tg_last_error,TgPendingSeconds(),ArraySize(g_tg_queue));
    return false;
 }
 void TgAddChunk(string &chunks[],const string chunk)
@@ -694,7 +778,9 @@ bool Tg(const string msg)
    string chunks[];
    TgSplit(msg,chunks);
 
-   bool queued=(ArraySize(g_tg_queue)>0);
+   // Con una espera en curso tampoco se intenta un aviso nuevo: iria directo a
+   // otro fallo y alargaria la penalizacion.
+   bool queued=(ArraySize(g_tg_queue)>0) || !TgSendDue();
 
    for(int i=0;i<ArraySize(chunks);i++)
    {
@@ -709,6 +795,7 @@ bool Tg(const string msg)
 void TgFlush()
 {
    if(!TgConfigured()) return;
+   if(!TgSendDue()) return;
 
    for(int sent=0;sent<InpTelegramSendsPerCycle && ArraySize(g_tg_queue)>0;sent++)
    {
@@ -730,6 +817,7 @@ void PersistAlert(const string k,const string msg)
    datetime now=TimeLocal(); int i=AlertIndex(k);
    if(i<0){ i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1); g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0; }
    bool due=!g_alerts[i].active || (now-g_alerts[i].last)>=InpMismatchReminderSeconds;
+   if(!g_alerts[i].active) g_alerts_dirty=true;
    g_alerts[i].active=true;
    if(due)
    {
@@ -739,7 +827,13 @@ void PersistAlert(const string k,const string msg)
       Tg(msg);
    }
 }
-void ClearAlert(const string k){ int i=AlertIndex(k); if(i>=0) g_alerts[i].active=false; }
+void ClearAlert(const string k)
+{
+   int i=AlertIndex(k);
+   if(i<0) return;
+   if(g_alerts[i].active) g_alerts_dirty=true;
+   g_alerts[i].active=false;
+}
 // Un aviso de espera no se repite: hasta que el mercado abra no hay nada nuevo
 // que contar y el recordatorio solo generaria ruido.
 void AlertOnce(const string k,const string msg)
@@ -751,6 +845,7 @@ void AlertOnce(const string k,const string msg)
       g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0;
    }
    bool first=!g_alerts[i].active;
+   if(first) g_alerts_dirty=true;
    g_alerts[i].active=true;
    g_alerts[i].last=TimeLocal();
    if(first) Tg(msg);
@@ -767,8 +862,110 @@ void KeepAlert(const string k)
 void ResolveAlert(const string k,const string msg)
 {
    int i=AlertIndex(k);
-   if(i>=0 && g_alerts[i].active) Tg(msg);
-   if(i>=0) g_alerts[i].active=false;
+   if(i<0) return;
+   if(g_alerts[i].active)
+   {
+      Tg(msg);
+      g_alerts_dirty=true;
+   }
+   g_alerts[i].active=false;
+}
+
+//---------------- alert state on disk ----------------
+// El identificador de la instancia es libre, pero acaba siendo un nombre de
+// fichero: se queda solo con lo que cualquier sistema acepta.
+string SafeFileToken(const string raw)
+{
+   string out="";
+   for(int i=0;i<StringLen(raw);i++)
+   {
+      ushort c=StringGetCharacter(raw,i);
+      bool ok=(c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-';
+      out+=ok ? ShortToString(c) : "_";
+   }
+   return out=="" ? "SLAVE" : out;
+}
+// Local al terminal, no en la carpeta comun: el estado es de esta instancia y
+// dos Slave distintos no deben pisarse el fichero.
+string AlertStateFile()
+{
+   return "CopyMonitorMulti\\CM_ALERTS_"+SafeFileToken(InpSlaveID)+".txt";
+}
+// Solo se guardan los avisos activos: son los unicos que deben sobrevivir a un
+// reinicio para que su RESUELTO llegue a emitirse.
+void SaveAlertState()
+{
+   if(!InpPersistAlertState || !g_alerts_dirty) return;
+
+   FolderCreate("CopyMonitorMulti");
+
+   int h=FileOpen(AlertStateFile(),FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("[CM SLAVE] No se pudo guardar el estado de avisos en %s. err=%d",
+                  AlertStateFile(),GetLastError());
+      return;
+   }
+
+   for(int i=0;i<ArraySize(g_alerts);i++)
+   {
+      if(!g_alerts[i].active) continue;
+      // Tabulador como separador: las claves llevan '|' pero nunca tabuladores.
+      FileWrite(h,StringFormat("%I64d\t%s",(long)g_alerts[i].last,g_alerts[i].key));
+   }
+
+   FileClose(h);
+   g_alerts_dirty=false;
+}
+void LoadAlertState()
+{
+   if(!InpPersistAlertState) return;
+
+   int h=FileOpen(AlertStateFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE) return;
+
+   datetime now=TimeLocal();
+   int restored=0,discarded=0;
+
+   while(!FileIsEnding(h))
+   {
+      string line=FileReadString(h);
+      if(line=="") continue;
+
+      int tab=StringFind(line,"\t");
+      if(tab<=0) continue;
+
+      string key=StringSubstr(line,tab+1);
+      if(key=="" || AlertIndex(key)>=0) continue;
+
+      datetime last=(datetime)StringToInteger(StringSubstr(line,0,tab));
+
+      // Un aviso activo que nadie vuelve a tocar no caduca nunca: PruneState
+      // solo descarta los inactivos. Si la clave ya no corresponde a ningun
+      // canal configurado, revivirla la dejaria en el fichero para siempre,
+      // asi que se aplica la misma caducidad que al resto del estado.
+      if(now-last>InpStateTTLSeconds)
+      {
+         discarded++;
+         continue;
+      }
+
+      int n=ArraySize(g_alerts);
+      ArrayResize(g_alerts,n+1);
+      g_alerts[n].key=key;
+      g_alerts[n].active=true;
+      g_alerts[n].last=last;
+      restored++;
+   }
+
+   FileClose(h);
+
+   if(restored>0 || discarded>0)
+      PrintFormat("[CM SLAVE] Estado de avisos recuperado: %d activos, %d caducados.",
+                  restored,discarded);
+
+   // El fichero en disco ya no refleja lo que hay en memoria si se descarto algo.
+   if(discarded>0) g_alerts_dirty=true;
 }
 
 //---------------- snapshot ----------------
@@ -939,7 +1136,7 @@ string MasterPendingDetails(const Owner &o,const OrdRec &order)
       "Símbolo esperado Slave: "+slave_symbol+"\n"+
       "Ticket Master: "+StringFormat("%I64u",order.ticket)+"\n\n"+
       "Volumen Master: "+VolumeText(slave_symbol,order.vol)+"\n"+
-      "Volumen Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+      "Volumen Slave esperado: "+VolumeText(slave_symbol,expected_volume)+"\n"+
       "Precio de entrada: "+PriceText(order.price);
    if(IsStopLimitType(order.type))
       text+="\nPrecio límite: "+StopText(order.stoplimit,"NO DISPONIBLE");
@@ -1376,7 +1573,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Símbolo esperado Slave: "+slave_symbol+"\n"+
             "Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+"\n\n"+
             "Volumen Master: "+VolumeText(slave_symbol,snap.pos[i].vol)+"\n"+
-            "Volumen Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+            "Volumen Slave esperado: "+VolumeText(slave_symbol,expected_volume)+"\n"+
             "Precio de entrada: "+PriceText(snap.pos[i].price)+"\n"+
             "Stop Loss: "+StopText(snap.pos[i].sl,"SIN SL")+"\n"+
             "Take Profit: "+StopText(snap.pos[i].tp,"SIN TP");
@@ -2385,7 +2582,7 @@ string SnapshotStateText(const Snap &s)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.17 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.19 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n\n";
@@ -2419,6 +2616,8 @@ void Panel(const Owner &o[],const Snap &s[])
          p+=" | en cola: "+IntegerToString(ArraySize(g_tg_queue));
       if(g_tg_dropped>0)
          p+=" | descartados: "+IntegerToString(g_tg_dropped);
+      if(!TgSendDue())
+         p+=" | esperando "+IntegerToString(TgPendingSeconds())+" s";
       if(g_tg_last_error!="")
          p+=" | "+g_tg_last_error;
    }
@@ -2468,6 +2667,7 @@ void Cycle()
    Panel(g_owners,s);
    // Lo que no pudo salir en este ciclo se reintenta sin bloquear el aviso.
    TgFlush();
+   SaveAlertState();
 
    g_busy=false;
 }
@@ -2556,11 +2756,22 @@ bool Validate()
       Print("[CM SLAVE] InpTelegramSendsPerCycle debe estar entre 1 y 10.");
       return false;
    }
-   // Cada envio bloquea hasta InpTelegramTimeoutMs: el ciclo no puede quedarse
-   // atascado mas de cinco segundos vaciando la cola.
-   if(InpTelegramSendsPerCycle*InpTelegramTimeoutMs>5000)
+   // Cada envio bloquea hasta InpTelegramTimeoutMs. El tope sube respecto a la
+   // v1.17 porque el timeout corto convertia una respuesta lenta en un fallo;
+   // con el backoff, un ciclo largo deja de repetirse cada segundo.
+   if(InpTelegramSendsPerCycle*InpTelegramTimeoutMs>15000)
    {
-      Print("[CM SLAVE] InpTelegramSendsPerCycle por InpTelegramTimeoutMs no puede pasar de 5000 ms.");
+      Print("[CM SLAVE] InpTelegramSendsPerCycle por InpTelegramTimeoutMs no puede pasar de 15000 ms.");
+      return false;
+   }
+   if(InpTelegramRetryBaseSeconds<1 || InpTelegramRetryBaseSeconds>3600)
+   {
+      Print("[CM SLAVE] InpTelegramRetryBaseSeconds debe estar entre 1 y 3600.");
+      return false;
+   }
+   if(InpTelegramRetryMaxSeconds<InpTelegramRetryBaseSeconds || InpTelegramRetryMaxSeconds>86400)
+   {
+      Print("[CM SLAVE] InpTelegramRetryMaxSeconds debe estar entre InpTelegramRetryBaseSeconds y 86400.");
       return false;
    }
    return BuildConfig();
@@ -2581,6 +2792,9 @@ int OnInit()
    if(!Validate())return INIT_PARAMETERS_INCORRECT;
    g_trade.SetAsyncMode(false);
    g_trade.LogLevel(LOG_LEVEL_ERRORS);
+   // Antes del primer ciclo: si un problema seguia avisado al apagar, hay que
+   // reconocerlo para poder darlo por resuelto en vez de avisarlo de nuevo.
+   LoadAlertState();
    Cycle();
    if(!EventSetTimer(InpMonitorSeconds))
    {
@@ -2589,7 +2803,15 @@ int OnInit()
    }
    return INIT_SUCCEEDED;
 }
-void OnDeinit(const int reason){EventKillTimer();Comment("");}
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   // Un apagado limpio guarda siempre, aunque el conjunto activo no haya
+   // cambiado en este ciclo: las marcas de tiempo si lo han hecho.
+   g_alerts_dirty=true;
+   SaveAlertState();
+   Comment("");
+}
 void OnTimer(){Cycle();}
 void OnTradeTransaction(const MqlTradeTransaction &t,const MqlTradeRequest &r,const MqlTradeResult &x)
 {

@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_17_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_19_MULTI.mq5",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the MQL5 pair.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
