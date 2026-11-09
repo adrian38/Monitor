@@ -10,6 +10,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
 - [development.md](development.md): flujo de edición, versionado y verificación.
 - [pending_matching.md](pending_matching.md): emparejamiento uno a uno de
   pendientes, detección de faltantes y política conservadora de borrado.
+- [telegram_messages.md](telegram_messages.md): formato humano unificado,
+  identificadores de cuenta y datos operativos exigidos en cada aviso.
 
 El código es la autoridad sobre los detalles que no estén documentados aquí.
 Toda decisión duradera nueva debe añadirse a una nota temática y a este índice.

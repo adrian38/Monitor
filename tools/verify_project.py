@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_12_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_14_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_15_MULTI.mq5",
 }
 
 
@@ -62,6 +62,31 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
     require("PositionClose" not in slave, "slave: automatic position close detected", failures)
 
 
+def check_telegram_contract(slave: str, failures: list[str]) -> None:
+    required = (
+        '"ID MASTER: "',
+        '"ID SLAVE: "',
+        '"Estado: POSICIÓN ACTIVA',
+        '"Estado: ORDEN PENDIENTE',
+        '"Multiplicador: "',
+        '"Volumen esperado Slave: "',
+        '"Stop Loss: "',
+        '"Take Profit: "',
+        '"Ticket Master: "',
+        '"Ticket Slave: "',
+        'OrderTypeText(order.type)',
+    )
+    for token in required:
+        require(token in slave, f"slave: Telegram contract missing: {token}", failures)
+
+    for internal_label in ('"Owner comment:', '"Channel:', '"Profile:'):
+        require(
+            internal_label not in slave,
+            f"slave: internal routing data exposed in messages: {internal_label}",
+            failures,
+        )
+
+
 def check_context(failures: list[str]) -> None:
     index = (ROOT / "ai_context" / "main.md").read_text(encoding="utf-8")
     for note in ("architecture.md", "protocol_and_safety.md", "development.md"):
@@ -73,6 +98,7 @@ def main() -> int:
     failures: list[str] = []
     source = {name: check_source(name, path, failures) for name, path in SOURCES.items()}
     check_protocol(source["master"], source["slave"], failures)
+    check_telegram_contract(source["slave"], failures)
     check_context(failures)
 
     if failures:

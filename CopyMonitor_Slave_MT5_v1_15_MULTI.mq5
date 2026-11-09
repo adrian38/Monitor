@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_14_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_15_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.14"
-#property description "CopyMonitor Slave MT5 v1.14 MULTI"
+#property version "1.15"
+#property description "CopyMonitor Slave MT5 v1.15 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -151,6 +151,46 @@ string ProfileText(ENUM_COPY_PROFILE p)
    if(p==PROFILE_PORTFOLIO46) return "PORTFOLIO46";
    if(p==PROFILE_LUNA) return "LUNA";
    return "GENERIC";
+}
+string AccountText(const long account)
+{
+   if(account<=0) return "NO DISPONIBLE";
+   return StringFormat("%I64d",account);
+}
+string AlertHeader(const Snap &snap,const string level)
+{
+   return level+"\n\n"+
+          "ID MASTER: "+AccountText(snap.account)+"\n"+
+          "ID SLAVE: "+AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN));
+}
+string PositionTypeText(const int type)
+{
+   if(type==POSITION_TYPE_BUY) return "BUY";
+   if(type==POSITION_TYPE_SELL) return "SELL";
+   return "DESCONOCIDO";
+}
+string OrderTypeText(const int type)
+{
+   if(type==ORDER_TYPE_BUY_LIMIT) return "BUY LIMIT";
+   if(type==ORDER_TYPE_SELL_LIMIT) return "SELL LIMIT";
+   if(type==ORDER_TYPE_BUY_STOP) return "BUY STOP";
+   if(type==ORDER_TYPE_SELL_STOP) return "SELL STOP";
+   if(type==ORDER_TYPE_BUY_STOP_LIMIT) return "BUY STOP LIMIT";
+   if(type==ORDER_TYPE_SELL_STOP_LIMIT) return "SELL STOP LIMIT";
+   return "DESCONOCIDO";
+}
+string PriceText(const double value)
+{
+   return DoubleToString(value,8);
+}
+string StopText(const double value,const string empty_text)
+{
+   if(MathAbs(value)<1e-12) return empty_text;
+   return PriceText(value);
+}
+string MultiplierText(const double value)
+{
+   return DoubleToString(value,4);
 }
 bool LoadOwners(Owner &o[])
 {
@@ -385,6 +425,72 @@ bool SymbolEq(const string channel,const string ms,const string ss)
    }
    return false;
 }
+string ExpectedSlaveSymbol(const string channel,const string master_symbol)
+{
+   if(InpSymbolMaps=="") return master_symbol;
+   string e[]; SplitClean(InpSymbolMaps,';',e);
+   for(int i=0;i<ArraySize(e);i++)
+   {
+      string f[]; int n=StringSplit(e[i],',',f); if(n<3)continue;
+      for(int k=0;k<3;k++){StringTrimLeft(f[k]);StringTrimRight(f[k]);}
+      if(f[0]==channel && f[1]==master_symbol) return f[2];
+   }
+   return master_symbol;
+}
+int VolumeDigits(const double step)
+{
+   for(int digits=0;digits<=8;digits++)
+      if(MathAbs(NormalizeDouble(step,digits)-step)<1e-9)
+         return digits;
+   return 8;
+}
+double ExpectedSlaveVolume(const string slave_symbol,const double master_volume,const double multiplier)
+{
+   double raw=master_volume*multiplier;
+   double step=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_STEP);
+   double minimum=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_MIN);
+   double maximum=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_MAX);
+   if(step<=0) return raw;
+
+   double normalized=MathRound(raw/step)*step;
+   if(minimum>0) normalized=MathMax(minimum,normalized);
+   if(maximum>0) normalized=MathMin(maximum,normalized);
+   return NormalizeDouble(normalized,VolumeDigits(step));
+}
+string VolumeText(const string symbol,const double volume)
+{
+   double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+   return DoubleToString(volume,step>0 ? VolumeDigits(step) : 4);
+}
+string MasterPendingDetails(const Owner &o,const OrdRec &order)
+{
+   string slave_symbol=ExpectedSlaveSymbol(o.channel,order.symbol);
+   double expected_volume=ExpectedSlaveVolume(slave_symbol,order.vol,o.mult);
+   return
+      "Estado: ORDEN PENDIENTE\n"+
+      "Tipo: "+OrderTypeText(order.type)+"\n"+
+      "Símbolo Master: "+order.symbol+"\n"+
+      "Símbolo esperado Slave: "+slave_symbol+"\n"+
+      "Ticket Master: "+StringFormat("%I64u",order.ticket)+"\n\n"+
+      "Volumen Master: "+VolumeText(slave_symbol,order.vol)+"\n"+
+      "Multiplicador: "+MultiplierText(o.mult)+"\n"+
+      "Volumen esperado Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+      "Precio de entrada: "+PriceText(order.price)+"\n"+
+      "Stop Loss: "+StopText(order.sl,"SIN SL")+"\n"+
+      "Take Profit: "+StopText(order.tp,"SIN TP");
+}
+string SlavePendingDetails(const OrdRec &order)
+{
+   return
+      "Estado: ORDEN PENDIENTE\n"+
+      "Tipo: "+OrderTypeText(order.type)+"\n"+
+      "Símbolo: "+order.symbol+"\n"+
+      "Ticket Slave: "+StringFormat("%I64u",order.ticket)+"\n"+
+      "Volumen Slave: "+VolumeText(order.symbol,order.vol)+"\n"+
+      "Precio de entrada: "+PriceText(order.price)+"\n"+
+      "Stop Loss: "+StopText(order.sl,"SIN SL")+"\n"+
+      "Take Profit: "+StopText(order.tp,"SIN TP");
+}
 
 //---------------- slave collections ----------------
 bool OwnerCommentMatch(const Owner &o,const string comment)
@@ -431,7 +537,8 @@ void SlaveOrdForOwner(const Owner &o,OrdRec &a[])
 bool VolEq(const string ss,double actual,double expected)
 {
    double step=SymbolInfoDouble(ss,SYMBOL_VOLUME_STEP);if(step<=0)step=0.01;
-   return MathAbs(actual-expected)<=MathMax(1,InpVolumeToleranceSteps)*step+1e-9;
+   double normalized=ExpectedSlaveVolume(ss,expected,1.0);
+   return MathAbs(actual-normalized)<=MathMax(1,InpVolumeToleranceSteps)*step+1e-9;
 }
 double PointOf(const string s){ double p=SymbolInfoDouble(s,SYMBOL_POINT); return p>0?p:0.00001; }
 bool StopEq(double a,double b,double tol)
@@ -462,7 +569,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
    ArrayResize(su,ArraySize(sp));
    ArrayInitialize(su,false);
 
-   int missing=0,slbad=0,tpbad=0;
+   bool problems=false;
    string details="";
 
    // 1) Protect the Slave copy corresponding to every ignored MASTER ticket.
@@ -518,7 +625,22 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
       if(best<0)
       {
-         missing++;
+         string slave_symbol=ExpectedSlaveSymbol(o.channel,snap.pos[i].symbol);
+         double expected_volume=ExpectedSlaveVolume(slave_symbol,snap.pos[i].vol,o.mult);
+         problems=true;
+         details+=
+            "\n\nPROBLEMA:\nFalta la copia de una posición activa.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
+            "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+            "Símbolo esperado Slave: "+slave_symbol+"\n"+
+            "Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+"\n\n"+
+            "Volumen Master: "+VolumeText(slave_symbol,snap.pos[i].vol)+"\n"+
+            "Multiplicador: "+MultiplierText(o.mult)+"\n"+
+            "Volumen esperado Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+            "Precio de entrada: "+PriceText(snap.pos[i].price)+"\n"+
+            "Stop Loss: "+StopText(snap.pos[i].sl,"SIN SL")+"\n"+
+            "Take Profit: "+StopText(snap.pos[i].tp,"SIN TP");
          continue;
       }
 
@@ -526,71 +648,60 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
       double tol=InpSLTPTolerancePoints*PointOf(sp[best].symbol);
 
-      if(InpCheckStopLoss &&
-         !StopEq(snap.pos[i].sl,sp[best].sl,tol))
+      bool sl_bad=InpCheckStopLoss && !StopEq(snap.pos[i].sl,sp[best].sl,tol);
+      bool tp_bad=InpCheckTakeProfit && !StopEq(snap.pos[i].tp,sp[best].tp,tol);
+
+      if(sl_bad || tp_bad)
       {
-         slbad++;
+         problems=true;
+         details+=
+            "\n\nPROBLEMA:\nLa posición copiada tiene valores diferentes.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
+            "Símbolo: "+sp[best].symbol+"\n"+
+            "Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+"\n"+
+            "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n";
 
-         if(details=="")
-            details=
-               "Example: "+snap.pos[i].symbol+" -> "+sp[best].symbol+
-               "\nMaster ticket="+StringFormat("%I64u",snap.pos[i].ticket)+
-               "\nMaster SL="+DoubleToString(snap.pos[i].sl,8)+
-               " Slave SL="+DoubleToString(sp[best].sl,8);
-      }
+         if(sl_bad)
+            details+=
+               "\nSL Master: "+StopText(snap.pos[i].sl,"SIN SL")+
+               "\nSL Slave: "+StopText(sp[best].sl,"SIN SL");
 
-      if(InpCheckTakeProfit &&
-         !StopEq(snap.pos[i].tp,sp[best].tp,tol))
-      {
-         tpbad++;
-
-         if(details=="")
-            details=
-               "Example: "+snap.pos[i].symbol+" -> "+sp[best].symbol+
-               "\nMaster ticket="+StringFormat("%I64u",snap.pos[i].ticket)+
-               "\nMaster TP="+DoubleToString(snap.pos[i].tp,8)+
-               " Slave TP="+DoubleToString(sp[best].tp,8);
+         if(tp_bad)
+            details+=
+               "\nTP Master: "+StopText(snap.pos[i].tp,"SIN TP")+
+               "\nTP Slave: "+StopText(sp[best].tp,"SIN TP");
       }
    }
 
    // Anything still unused is genuinely unmatched after protecting ignored
    // Master-ticket copies.
-   int extra=0;
-
    for(int j=0;j<ArraySize(sp);j++)
-      if(!su[j])
-         extra++;
+   {
+      if(su[j] || o.profile!=PROFILE_PORTFOLIO46)
+         continue;
 
-   // GENERIC and LUNA preserve Master->Slave behavior: extras ignored.
-   int report_extra=
-      (o.profile==PROFILE_PORTFOLIO46 ? extra : 0);
+      problems=true;
+      details+=
+         "\n\nPROBLEMA:\nExiste una posición activa extra en el Slave.\n\n"+
+         "Estado: POSICIÓN ACTIVA\n"+
+         "Tipo: "+PositionTypeText(sp[j].type)+"\n"+
+         "Símbolo: "+sp[j].symbol+"\n"+
+         "Ticket Slave: "+StringFormat("%I64u",sp[j].ticket)+"\n"+
+         "Volumen Slave: "+VolumeText(sp[j].symbol,sp[j].vol)+"\n"+
+         "Precio de entrada: "+PriceText(sp[j].price)+"\n"+
+         "Stop Loss: "+StopText(sp[j].sl,"SIN SL")+"\n"+
+         "Take Profit: "+StopText(sp[j].tp,"SIN TP");
+   }
 
    string key="OPEN|"+o.channel;
 
-   if(missing>0 || report_extra>0 || slbad>0 || tpbad>0)
+   if(problems)
    {
-      string msg="COPY MONITOR - OPEN POSITION MISMATCH\n\n";
-
-      msg+="Profile: "+ProfileText(o.profile)+"\n";
-      msg+="Master: "+snap.nick+" ["+o.channel+"]\n";
-      msg+="Slave: "+InpAccountNick+"\n";
-
-      if(InpMultiMaster)
-         msg+="Owner comment: "+o.comment+"\n";
-
-      msg+="\nMissing in Slave: "+IntegerToString(missing);
-
-      if(o.profile==PROFILE_PORTFOLIO46)
-         msg+="\nExtra in Slave: "+IntegerToString(extra);
-
-      msg+="\nSL mismatch: "+IntegerToString(slbad);
-      msg+="\nTP mismatch: "+IntegerToString(tpbad);
-
-      if(details!="")
-         msg+="\n\n"+details;
-
-      msg+="\n\nIgnored Master tickets do not participate in monitoring.";
-      msg+="\nNo open position is automatically closed or modified.";
+      string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+details;
+      msg+="\n\nACCIÓN:\nRevisar la cuenta Slave "+
+           AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".";
+      msg+="\nCopyMonitor no modifica posiciones automáticamente.";
 
       PersistAlert(key,msg);
    }
@@ -732,21 +843,27 @@ void CheckPending(const Owner &o,const Snap &snap)
    if(InpMonitorPendingOrders && InpExpectPendingCopies)
    {
       int missing_pending=0;
+      string missing_details="";
       for(int m=0;m<ArraySize(snap.ord);m++)
+      {
          if(!master_matched[m])
+         {
             missing_pending++;
+            missing_details+=
+               "\n\nPROBLEMA:\nFalta la copia de una orden pendiente.\n\n"+
+               MasterPendingDetails(o,snap.ord[m]);
+         }
+      }
 
       if(missing_pending>0)
       {
+         string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+missing_details;
+         msg+="\n\nACCIÓN:\nCrear o revisar estas órdenes en la cuenta Slave "+
+              AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".";
+         msg+="\nCopyMonitor no abre órdenes automáticamente.";
          PersistAlert(
             "PMISS|"+o.channel,
-            "PENDING ORDER MISSING IN SLAVE\n\n"+
-            "Master: "+snap.nick+" ["+o.channel+"]\n"+
-            "Slave: "+InpAccountNick+
-            "\nMissing copies: "+IntegerToString(missing_pending)+
-            "\nExpected copies mode is ON."+
-            "\nIgnored Master pending tickets are excluded."+
-            "\nNo order will be opened automatically.");
+            msg);
       }
       else
       {
@@ -772,20 +889,11 @@ void CheckPending(const Owner &o,const Snap &snap)
 
       if(!safe_orphan)
       {
-         string msg=
-            "UNMATCHED SLAVE PENDING - DELETE BLOCKED\n\n"+
-            "Master: "+snap.nick+" ["+o.channel+"]\n"+
-            "Slave: "+InpAccountNick;
-
-         if(InpMultiMaster)
-            msg+="\nOwner comment: "+o.comment;
-
-         msg+="\nSlave ticket: "+StringFormat("%I64u",so[s].ticket)+
-              "\nMaster still has pending order(s)."+
-              "\nIgnored Master tickets are also treated as protected."+
-              "\nAutomatic deletion is blocked to avoid deleting a copy"+
-              " of an ignored Master pending."+
-              "\nConfigure InpSymbolMaps when broker symbols differ.";
+         string msg=AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+
+            "\n\nPROBLEMA:\nExiste una orden pendiente en el Slave que no se puede emparejar.\n\n"+
+            SlavePendingDetails(so[s])+
+            "\n\nACCIÓN:\nRevisar las órdenes pendientes de ambas cuentas."+
+            "\nEl borrado automático está bloqueado mientras el Master tenga pendientes.";
 
          PersistAlert(
             "PAMB|"+o.channel+"|"+
@@ -808,13 +916,15 @@ void CheckPending(const Owner &o,const Snap &snap)
 
       if(!InpAutoDeleteExtraPending)
       {
+         string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
+            "\n\nPROBLEMA:\nExiste una orden pendiente extra en el Slave.\n\n"+
+            SlavePendingDetails(so[s])+
+            "\n\nACCIÓN:\nRevisar la cuenta Slave "+
+            AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"."+
+            "\nEl borrado automático está desactivado.";
          PersistAlert(
             key,
-            "EXTRA PENDING ORDER EXISTS IN SLAVE BUT NOT IN MASTER\n\n"+
-            "Master: "+snap.nick+" ["+o.channel+"]\n"+
-            "Slave: "+InpAccountNick+
-            "\nTicket Slave: "+StringFormat("%I64u",so[s].ticket)+
-            "\nAuto-delete is disabled.");
+            msg);
 
          continue;
       }
@@ -828,21 +938,14 @@ void CheckPending(const Owner &o,const Snap &snap)
       ResetLastError();
       bool ok=g_trade.OrderDelete(so[s].ticket);
 
-      string msg=
-         "EXTRA PENDING ORDER EXISTS IN SLAVE BUT NOT IN MASTER\n\n"+
-         "Master: "+snap.nick+" ["+o.channel+"]\n"+
-         "Slave: "+InpAccountNick+"\n";
-
-      if(InpMultiMaster)
-         msg+="Owner comment: "+o.comment+"\n";
-
-      msg+="Ticket Slave: "+StringFormat("%I64u",so[s].ticket)+"\n";
-      msg+="Symbol: "+live.symbol+"\n";
-      msg+="Type: "+IntegerToString(live.type)+"\n";
+      string detail=
+         "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
+         SlavePendingDetails(live);
 
       if(ok)
       {
-         msg+="Result: PENDING DELETED.";
+         string msg=AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
+            "\n\nACCIÓN:\nLa orden pendiente fue eliminada correctamente.";
 
          if(InpNotifyDeleteSuccess)
             Tg(msg);
@@ -852,10 +955,13 @@ void CheckPending(const Owner &o,const Snap &snap)
       }
       else
       {
-         msg+="Result: DELETE FAILED.\n";
-         msg+="Retcode: "+IntegerToString((int)g_trade.ResultRetcode())+"\n";
-         msg+=g_trade.ResultRetcodeDescription()+"\n";
-         msg+="MQL error: "+IntegerToString(GetLastError());
+         string msg=AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
+            "\n\nACCIÓN:\nNo se pudo eliminar la orden pendiente."+
+            "\nRevisar manualmente la cuenta Slave "+
+            AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"."+
+            "\nRetcode: "+IntegerToString((int)g_trade.ResultRetcode())+
+            "\nDetalle: "+g_trade.ResultRetcodeDescription()+
+            "\nError MQL: "+IntegerToString(GetLastError());
 
          if(InpNotifyDeleteFailure)
             PersistAlert(key,msg);
@@ -869,8 +975,13 @@ void ProcessOwner(const Owner &o,const Snap &s)
    if(!s.valid || !s.fresh)
    {
       if(InpNotifySnapshotProblems)
-         PersistAlert("STALE|"+o.channel,"MASTER SNAPSHOT NOT FRESH\n\nChannel: "+o.channel+
-                      "\nSlave: "+InpAccountNick+"\nComparison and pending deletion suspended.");
+      {
+         string msg=AlertHeader(s,"🔴 COPYMONITOR — CRÍTICO")+
+            "\n\nPROBLEMA:\nNo se reciben datos válidos y recientes de la cuenta Master."+
+            "\n\nACCIÓN:\nComprobar el EA Master."+
+            "\nLa comparación y el borrado de pendientes están suspendidos.";
+         PersistAlert("STALE|"+o.channel,msg);
+      }
       return;
    }
    ClearAlert("STALE|"+o.channel);
@@ -880,7 +991,7 @@ void ProcessOwner(const Owner &o,const Snap &s)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.14 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.15 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n\n";
    for(int i=0;i<ArraySize(o);i++)
    {

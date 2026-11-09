@@ -8,7 +8,7 @@ compara las copias existentes en el Slave y avisa de diferencias.
 
 - `CopyMonitor_Master_MT5_v1_12_MULTI.mq5`: publica posiciones abiertas y
   órdenes pendientes en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_14_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_15_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 
