@@ -37,8 +37,15 @@ Antes de enviar nada se exige, en este orden:
 - distancia mínima del bróker para el precio de entrada y para SL y TP, con
   precios actuales disponibles.
 
-Cualquier comprobación fallida produce `BLOQUEADO` con el motivo concreto y no
-toca la cuenta. Esto sustituye al `CRÍTICO` repetido en cada ventana que
+Si el mercado del símbolo está cerrado, el problema entra en espera: un único
+`BLOQUEADO`, sin repetir el recordatorio del problema, con reintento cada
+`InpMarketClosedRetrySeconds` y corrección en cuanto abra la sesión. Lo mismo
+vale cuando el bróker rechaza con mercado cerrado, trading deshabilitado o falta
+de cotizaciones, que es lo que cubre un festivo no declarado en las sesiones.
+Ver [robustness.md](robustness.md).
+
+Cualquier otra comprobación fallida produce `BLOQUEADO` con el motivo concreto y
+no toca la cuenta. Esto sustituye al `CRÍTICO` repetido en cada ventana que
 generaba antes una orden estructuralmente imposible. Un rechazo por modo de
 llenado se reintenta una sola vez con `ORDER_FILLING_RETURN`.
 

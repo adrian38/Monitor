@@ -99,6 +99,21 @@ input bool   InpNotifySnapshotProblems                = false;
 // InpNotifySnapshotProblems solo gobierna la falta transitoria de datos. Un
 // snapshot con el contrato roto se avisa siempre.
 
+input group "===== TIMERS / LIMITES INTERNOS ====="
+// Valores por defecto: los que el EA usaba fijos hasta la v1.17.
+// Caducidad del estado interno (ventanas, avisos cerrados, bloqueos).
+input int InpStateTTLSeconds                          = 3600;
+// Lecturas del snapshot por ciclo y pausa entre ellas, para absorber una
+// lectura que coincida con la reescritura del Master.
+input int InpSnapshotReadAttempts                     = 3;
+input int InpSnapshotReadRetryMs                      = 15;
+// Reintento de una correccion mientras el mercado del simbolo este cerrado.
+input int InpMarketClosedRetrySeconds                 = 60;
+// Troceo, cola y ritmo de envio de Telegram.
+input int InpTelegramChunkChars                       = 3000;
+input int InpTelegramQueueMax                         = 40;
+input int InpTelegramSendsPerCycle                    = 2;
+
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
 
@@ -139,18 +154,9 @@ struct Blocked { string key; datetime last_seen; };
 #define CM_SNAP_SCHEMA   3
 #define CM_SNAP_CHANNEL  4
 
-// Las claves de estado llevan ticket, asi que una sesion larga acumularia
-// entradas muertas. Se descarta lo que nadie vuelve a tocar en este tiempo.
-#define CM_STATE_TTL_SECONDS 3600
-// Una lectura puede coincidir con la reescritura del Master. El contenido roto
-// se detecta siempre, asi que basta con reintentar dentro del mismo ciclo.
-#define CM_READ_ATTEMPTS     3
-#define CM_READ_RETRY_MS     15
-// Telegram rechaza mensajes de mas de 4096 caracteres: un aviso agrupado largo
-// se perderia entero. Se trocea con margen y lo que falla espera en cola.
-#define CM_TG_CHUNK_CHARS      3000
-#define CM_TG_QUEUE_MAX        40
-#define CM_TG_FLUSH_PER_CYCLE  2
+// Longitud maxima del identificador de canal. No es un ajuste: forma parte del
+// contrato compartido con el Master y los dos EAs deben declarar el mismo
+// valor, asi que se queda como constante.
 #define CM_CHANNEL_MAX_LEN     32
 
 bool g_busy=false;
@@ -641,7 +647,7 @@ void TgSplit(const string msg,string &chunks[])
    {
       string candidate=(current=="") ? lines[i] : current+"\n"+lines[i];
 
-      if(StringLen(candidate)<=CM_TG_CHUNK_CHARS)
+      if(StringLen(candidate)<=InpTelegramChunkChars)
       {
          current=candidate;
          continue;
@@ -650,10 +656,10 @@ void TgSplit(const string msg,string &chunks[])
       TgAddChunk(chunks,current);
       current=lines[i];
 
-      while(StringLen(current)>CM_TG_CHUNK_CHARS)
+      while(StringLen(current)>InpTelegramChunkChars)
       {
-         TgAddChunk(chunks,StringSubstr(current,0,CM_TG_CHUNK_CHARS));
-         current=StringSubstr(current,CM_TG_CHUNK_CHARS);
+         TgAddChunk(chunks,StringSubstr(current,0,InpTelegramChunkChars));
+         current=StringSubstr(current,InpTelegramChunkChars);
       }
    }
 
@@ -666,7 +672,7 @@ void TgEnqueue(const string chunk)
 {
    int n=ArraySize(g_tg_queue);
 
-   if(n>=CM_TG_QUEUE_MAX)
+   if(n>=InpTelegramQueueMax)
    {
       // Cola llena: se descarta lo mas antiguo y se deja constancia.
       for(int i=0;i<n-1;i++) g_tg_queue[i]=g_tg_queue[i+1];
@@ -704,7 +710,7 @@ void TgFlush()
 {
    if(!TgConfigured()) return;
 
-   for(int sent=0;sent<CM_TG_FLUSH_PER_CYCLE && ArraySize(g_tg_queue)>0;sent++)
+   for(int sent=0;sent<InpTelegramSendsPerCycle && ArraySize(g_tg_queue)>0;sent++)
    {
       if(!TgPost(g_tg_queue[0]))
          return;
@@ -734,6 +740,30 @@ void PersistAlert(const string k,const string msg)
    }
 }
 void ClearAlert(const string k){ int i=AlertIndex(k); if(i>=0) g_alerts[i].active=false; }
+// Un aviso de espera no se repite: hasta que el mercado abra no hay nada nuevo
+// que contar y el recordatorio solo generaria ruido.
+void AlertOnce(const string k,const string msg)
+{
+   int i=AlertIndex(k);
+   if(i<0)
+   {
+      i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1);
+      g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0;
+   }
+   bool first=!g_alerts[i].active;
+   g_alerts[i].active=true;
+   g_alerts[i].last=TimeLocal();
+   if(first) Tg(msg);
+}
+// Mantiene vivo un aviso ya emitido sin reenviarlo, para que siga pudiendo
+// resolverse y no caduque mientras el problema continua.
+void KeepAlert(const string k)
+{
+   int i=AlertIndex(k);
+   if(i<0) return;
+   g_alerts[i].active=true;
+   g_alerts[i].last=TimeLocal();
+}
 void ResolveAlert(const string k,const string msg)
 {
    int i=AlertIndex(k);
@@ -835,15 +865,15 @@ bool ReadSnap(const string channel,Snap &s)
 {
    int status=CM_SNAP_MISSING;
 
-   for(int attempt=0;attempt<CM_READ_ATTEMPTS;attempt++)
+   for(int attempt=0;attempt<InpSnapshotReadAttempts;attempt++)
    {
       status=ReadSnapOnce(channel,s);
 
       if(status==CM_SNAP_OK || status==CM_SNAP_SCHEMA || status==CM_SNAP_CHANNEL)
          break;
 
-      if(attempt+1<CM_READ_ATTEMPTS)
-         Sleep(CM_READ_RETRY_MS);
+      if(attempt+1<InpSnapshotReadAttempts)
+         Sleep(InpSnapshotReadRetryMs);
    }
 
    s.status=status;
@@ -1166,6 +1196,97 @@ bool PositionStopsAcceptable(const string symbol,const int type,
    return true;
 }
 
+//---------------- market session guards ----------------
+// Un mercado cerrado no es un fallo de la copia: el bróker rechaza la orden y
+// no hay nada que decidir hasta que abra la sesión. Con dos brókers distintos
+// los horarios no tienen por qué coincidir, así que se trata como espera: un
+// único aviso, reintentos espaciados y la corrección en cuanto abra.
+struct MarketWait { string key; datetime last_try; };
+MarketWait g_market_wait[];
+
+int MarketWaitIndex(const string key)
+{
+   for(int i=0;i<ArraySize(g_market_wait);i++)
+      if(g_market_wait[i].key==key)
+         return i;
+   return -1;
+}
+bool MarketWaiting(const string key)
+{
+   return MarketWaitIndex(key)>=0;
+}
+// Sin entrada se intenta de inmediato; con entrada se respeta el intervalo.
+bool MarketWaitDue(const string key)
+{
+   int i=MarketWaitIndex(key);
+   if(i<0) return true;
+   return (TimeLocal()-g_market_wait[i].last_try)>=InpMarketClosedRetrySeconds;
+}
+void MarketWaitMark(const string key)
+{
+   int i=MarketWaitIndex(key);
+   if(i<0)
+   {
+      i=ArraySize(g_market_wait);
+      ArrayResize(g_market_wait,i+1);
+      g_market_wait[i].key=key;
+   }
+   g_market_wait[i].last_try=TimeLocal();
+}
+void MarketWaitRemove(const string key)
+{
+   int i=MarketWaitIndex(key);
+   if(i<0) return;
+   int n=ArraySize(g_market_wait);
+   for(int j=i;j<n-1;j++) g_market_wait[j]=g_market_wait[j+1];
+   ArrayResize(g_market_wait,n-1);
+}
+// Cierra la espera y su aviso cuando el problema se corrige o desaparece.
+void ClearMarketWait(const string problem_key)
+{
+   MarketWaitRemove(problem_key);
+   ClearAlert("PWAIT|"+problem_key);
+}
+bool TradeRetcodeIsMarketClosed(const uint code)
+{
+   return code==TRADE_RETCODE_MARKET_CLOSED ||
+          code==TRADE_RETCODE_TRADE_DISABLED ||
+          code==TRADE_RETCODE_PRICE_OFF;
+}
+// Las sesiones se declaran por día del servidor. Un símbolo sin sesiones
+// declaradas se da por abierto y se delega en el retcode del bróker: bloquear
+// por una heurística de cotizaciones dejaría sin corregir un instrumento poco
+// líquido durante su propia sesión.
+bool SymbolSessionOpen(const string symbol)
+{
+   MqlDateTime st;
+   TimeToStruct(TimeTradeServer(),st);
+
+   ENUM_DAY_OF_WEEK day=(ENUM_DAY_OF_WEEK)st.day_of_week;
+   int now_seconds=st.hour*3600+st.min*60+st.sec;
+   bool declared=false;
+
+   for(uint index=0;;index++)
+   {
+      datetime from=0,to=0;
+      if(!SymbolInfoSessionTrade(symbol,day,index,from,to))
+         break;
+      declared=true;
+      if(now_seconds>=(int)from && now_seconds<=(int)to)
+         return true;
+   }
+   return !declared;
+}
+void MarketClosedNotice(const Snap &snap,const string problem_key,
+                        const string detail,const string symbol)
+{
+   MarketWaitMark(problem_key);
+   AlertOnce("PWAIT|"+problem_key,
+      AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
+      "\n\nACCIÓN:\nEl mercado de "+symbol+" está cerrado en la cuenta Slave."+
+      "\nCopyMonitor reintentará la corrección cuando abra la sesión.");
+}
+
 //---------------- open matching ----------------
 bool PosCompatible(const Owner &o,const PosRec &m,const PosRec &s)
 {
@@ -1296,10 +1417,16 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
          string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+problem_detail+
             "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.";
-         PersistAlert(alert_key,alert);
+         // Mientras se espera a que abra el mercado no se repite el
+         // recordatorio: el aviso BLOQUEADO ya dice que no hay nada que hacer.
+         if(MarketWaiting(fix_key))
+            KeepAlert(alert_key);
+         else
+            PersistAlert(alert_key,alert);
 
          if(InpAutoFixPositionSLTP &&
-            ConfirmProblem(fix_key,InpAutoFixPersistSeconds))
+            ConfirmProblem(fix_key,InpAutoFixPersistSeconds) &&
+            MarketWaitDue(fix_key))
          {
             double target_sl=InpCheckStopLoss ? snap.pos[i].sl : sp[best].sl;
             double target_tp=InpCheckTakeProfit ? snap.pos[i].tp : sp[best].tp;
@@ -1310,6 +1437,10 @@ void CheckOpen(const Owner &o,const Snap &snap)
                PersistAlert("PBLOCK|"+fix_key,
                   AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+problem_detail+
                   "\n\nACCIÓN:\nNo se puede corregir automáticamente.\n"+g_trade_block_reason);
+            }
+            else if(!SymbolSessionOpen(sp[best].symbol))
+            {
+               MarketClosedNotice(snap,fix_key,problem_detail,sp[best].symbol);
             }
             else if(!PositionStopsAcceptable(sp[best].symbol,sp[best].type,
                                              target_sl,target_tp,blocked_reason))
@@ -1324,6 +1455,14 @@ void CheckOpen(const Owner &o,const Snap &snap)
                   "\n\nACCIÓN AUTOMÁTICA:\nSL y TP corregidos correctamente en la cuenta Slave.");
                ClearAlert(alert_key);
                ClearAlert("PBLOCK|"+fix_key);
+               ClearMarketWait(fix_key);
+               RemoveProblem(fix_key);
+            }
+            // El bróker puede rechazar por sesión cerrada aunque el calendario
+            // la declare abierta, por ejemplo en un festivo.
+            else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
+            {
+               MarketClosedNotice(snap,fix_key,problem_detail,sp[best].symbol);
                RemoveProblem(fix_key);
             }
             else
@@ -1338,6 +1477,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
       }
       else
       {
+         ClearMarketWait(fix_key);
          ResolveAlert(alert_key,
             AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
             "\n\nPROBLEMA RESUELTO:\nLos valores SL y TP de la posición ya coinciden."+
@@ -1648,6 +1788,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
                                   "\nTicket Slave: "+f[3]);
          ClearAlert("FAIL|"+key);
          ClearAlert("PBLOCK|FIXSLTP|"+f[1]+"|"+f[2]+"|"+f[3]);
+         ClearMarketWait("FIXSLTP|"+f[1]+"|"+f[2]+"|"+f[3]);
          RemoveProblem("FIXSLTP|"+f[1]+"|"+f[2]+"|"+f[3]);
          continue;
       }
@@ -1669,6 +1810,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
                                   "\nTicket Slave: "+f[3]);
          ClearAlert("FAIL|"+key);
          ClearAlert("PBLOCK|FIXPEND|"+f[1]+"|"+f[2]+"|"+f[3]);
+         ClearMarketWait("FIXPEND|"+f[1]+"|"+f[2]+"|"+f[3]);
          RemoveProblem("FIXPEND|"+f[1]+"|"+f[2]+"|"+f[3]);
          continue;
       }
@@ -1690,6 +1832,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
                                   "\nTicket Slave: "+f[2]);
          ClearAlert("FAIL|PEXTRA|"+f[1]+"|"+f[2]);
          ClearAlert("PBLOCK|DELETE|"+f[1]+"|"+f[2]);
+         ClearMarketWait("DELETE|"+f[1]+"|"+f[2]);
          RemoveProblem("DELETE|"+f[1]+"|"+f[2]);
          continue;
       }
@@ -1710,6 +1853,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
          ResolveVanished(key,snap,"La orden pendiente del Master que no se pudo copiar ya no existe."+
                                   "\nTicket Master: "+f[3]);
          UnblockCreate("CREATE|"+f[2]+"|"+f[3]);
+         ClearMarketWait("CREATE|"+f[2]+"|"+f[3]);
          RemoveProblem("CREATE|"+f[2]+"|"+f[3]);
          continue;
       }
@@ -1757,6 +1901,7 @@ void CheckPending(const Owner &o,const Snap &snap)
       {
          slave_protected[best]=true;
          RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearMarketWait("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
          ClearAlert("PEXTRA|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
          ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
@@ -1807,9 +1952,11 @@ void CheckPending(const Owner &o,const Snap &snap)
          string matched_create="CREATE|"+o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
          RemoveProblem(matched_create);
          UnblockCreate(matched_create);
+         ClearMarketWait(matched_create);
          ClearAlert("FAIL|"+matched_create);
          ClearAlert("PBLOCK|"+matched_create);
          RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearMarketWait("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
          ClearAlert("PEXTRA|"+o.channel+"|"+
                     StringFormat("%I64u",so[best].ticket));
          ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
@@ -1858,11 +2005,16 @@ void CheckPending(const Owner &o,const Snap &snap)
                detail+="\nTP Master: "+StopText(snap.ord[m].tp,"SIN TP")+
                        "\nTP Slave: "+StopText(so[best].tp,"SIN TP");
 
-            PersistAlert(alert_key,
-               AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
-               "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.");
+            if(MarketWaiting(fix_key))
+               KeepAlert(alert_key);
+            else
+               PersistAlert(alert_key,
+                  AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
+                  "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.");
 
-            if(InpAutoModifyPending && ConfirmProblem(fix_key,InpAutoFixPersistSeconds))
+            if(InpAutoModifyPending &&
+               ConfirmProblem(fix_key,InpAutoFixPersistSeconds) &&
+               MarketWaitDue(fix_key))
             {
                string blocked_reason="";
 
@@ -1871,6 +2023,10 @@ void CheckPending(const Owner &o,const Snap &snap)
                   PersistAlert("PBLOCK|"+fix_key,
                      AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
                      "\n\nACCIÓN:\nNo se puede modificar automáticamente.\n"+g_trade_block_reason);
+               }
+               else if(!SymbolSessionOpen(so[best].symbol))
+               {
+                  MarketClosedNotice(snap,fix_key,detail,so[best].symbol);
                }
                else if(!PendingPriceAcceptable(so[best].symbol,so[best].type,snap.ord[m].price,
                                                snap.ord[m].sl,snap.ord[m].tp,
@@ -1889,6 +2045,12 @@ void CheckPending(const Owner &o,const Snap &snap)
                      "\n\nACCIÓN AUTOMÁTICA:\nPrecio, SL y TP corregidos correctamente.");
                   ClearAlert(alert_key);
                   ClearAlert("PBLOCK|"+fix_key);
+                  ClearMarketWait(fix_key);
+                  RemoveProblem(fix_key);
+               }
+               else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
+               {
+                  MarketClosedNotice(snap,fix_key,detail,so[best].symbol);
                   RemoveProblem(fix_key);
                }
                else
@@ -1903,6 +2065,7 @@ void CheckPending(const Owner &o,const Snap &snap)
          }
          else
          {
+            ClearMarketWait(fix_key);
             ResolveAlert(alert_key,
                AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
                "\n\nPROBLEMA RESUELTO:\nLa orden pendiente ya tiene el precio, SL y TP correctos."+
@@ -1938,9 +2101,22 @@ void CheckPending(const Owner &o,const Snap &snap)
       {
          string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+missing_details;
          msg+="\n\nACCIÓN:\nEsperando que el problema persista antes de crear la orden automáticamente.";
-         PersistAlert(
-            "PMISS|"+o.channel,
-            msg);
+
+         // Si toda copia pendiente está esperando a que abra el mercado, el
+         // recordatorio agrupado no aporta nada nuevo.
+         bool all_waiting=(missing_pending>0);
+         for(int m=0;m<ArraySize(snap.ord) && all_waiting;m++)
+            if(!master_matched[m] &&
+               !MarketWaiting("CREATE|"+o.channel+"|"+
+                              StringFormat("%I64u",snap.ord[m].ticket)))
+               all_waiting=false;
+
+         if(all_waiting)
+            KeepAlert("PMISS|"+o.channel);
+         else
+            PersistAlert(
+               "PMISS|"+o.channel,
+               msg);
 
          bool created_any=false;
          for(int m=0;m<ArraySize(snap.ord);m++)
@@ -1949,7 +2125,8 @@ void CheckPending(const Owner &o,const Snap &snap)
             string create_key="CREATE|"+o.channel+"|"+
                               StringFormat("%I64u",snap.ord[m].ticket);
             if(!InpAutoCreateMissingPending || IsCreateBlocked(create_key) ||
-               !ConfirmProblem(create_key,InpAutoFixPersistSeconds))
+               !ConfirmProblem(create_key,InpAutoFixPersistSeconds) ||
+               !MarketWaitDue(create_key))
                continue;
 
             ulong created_ticket=0;
@@ -1967,6 +2144,14 @@ void CheckPending(const Owner &o,const Snap &snap)
                continue;
             }
 
+            string create_symbol=ExpectedSlaveSymbol(o.channel,snap.ord[m].symbol);
+
+            if(!SymbolSessionOpen(create_symbol))
+            {
+               MarketClosedNotice(snap,create_key,detail,create_symbol);
+               continue;
+            }
+
             int created=CreatePendingCopy(o,snap.ord[m],created_ticket,blocked_reason);
             RemoveProblem(create_key);
 
@@ -1977,6 +2162,7 @@ void CheckPending(const Owner &o,const Snap &snap)
                   "\n\nACCIÓN AUTOMÁTICA:\nLa orden pendiente fue creada correctamente.");
                ClearAlert("FAIL|"+create_key);
                ClearAlert("PBLOCK|"+create_key);
+               ClearMarketWait(create_key);
                created_any=true;
             }
             else if(created==CM_CREATE_UNVERIFIED)
@@ -1997,6 +2183,12 @@ void CheckPending(const Owner &o,const Snap &snap)
                PersistAlert("PBLOCK|"+create_key,
                   AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
                   "\n\nACCIÓN:\nNo se puede crear la copia automáticamente.\n"+blocked_reason);
+            }
+            // El bróker puede rechazar por sesión cerrada aunque el calendario
+            // la declare abierta, por ejemplo en un festivo.
+            else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
+            {
+               MarketClosedNotice(snap,create_key,detail,create_symbol);
             }
             else
             {
@@ -2067,7 +2259,10 @@ void CheckPending(const Owner &o,const Snap &snap)
          SlavePendingDetails(so[s]);
       string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
          "\n\nACCIÓN:\nEsperando que el problema persista antes de eliminarla automáticamente.";
-      PersistAlert(key,alert);
+      if(MarketWaiting(delete_problem))
+         KeepAlert(key);
+      else
+         PersistAlert(key,alert);
 
       if(!InpAutoDeleteExtraPending)
          continue;
@@ -2075,11 +2270,20 @@ void CheckPending(const Owner &o,const Snap &snap)
       if(!ConfirmProblem(delete_problem,InpExtraPendingConfirmSeconds))
          continue;
 
+      if(!MarketWaitDue(delete_problem))
+         continue;
+
       if(!g_trade_allowed)
       {
          PersistAlert("PBLOCK|"+delete_problem,
             AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
             "\n\nACCIÓN:\nNo se puede eliminar automáticamente.\n"+g_trade_block_reason);
+         continue;
+      }
+
+      if(!SymbolSessionOpen(so[s].symbol))
+      {
+         MarketClosedNotice(snap,delete_problem,detail,so[s].symbol);
          continue;
       }
 
@@ -2106,6 +2310,12 @@ void CheckPending(const Owner &o,const Snap &snap)
          RemoveProblem(delete_problem);
          ClearAlert(key);
          ClearAlert("PBLOCK|"+delete_problem);
+         ClearMarketWait(delete_problem);
+      }
+      else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
+      {
+         MarketClosedNotice(snap,delete_problem,detail,live.symbol);
+         RemoveProblem(delete_problem);
       }
       else
       {
@@ -2198,6 +2408,8 @@ void Panel(const Owner &o[],const Snap &s[])
    p+="Pending copies expected: "+(InpExpectPendingCopies?"YES":"NO")+"\n";
    p+="Extra pending auto-delete: "+(InpAutoDeleteExtraPending?"YES":"NO")+"\n";
    p+="Auto corrections: "+(g_trade_allowed ? "READY" : "BLOCKED: "+g_trade_block_reason)+"\n";
+   if(ArraySize(g_market_wait)>0)
+      p+="Esperando apertura de mercado: "+IntegerToString(ArraySize(g_market_wait))+"\n";
    if(!TgConfigured())
       p+="Telegram: OFF";
    else
@@ -2219,16 +2431,20 @@ void PruneState()
    datetime now=TimeLocal();
 
    for(int i=ArraySize(g_candidates)-1;i>=0;i--)
-      if((now-g_candidates[i].last_seen)>CM_STATE_TTL_SECONDS)
+      if((now-g_candidates[i].last_seen)>InpStateTTLSeconds)
          RemoveProblem(g_candidates[i].key);
 
    for(int i=ArraySize(g_create_blocked)-1;i>=0;i--)
-      if((now-g_create_blocked[i].last_seen)>CM_STATE_TTL_SECONDS)
+      if((now-g_create_blocked[i].last_seen)>InpStateTTLSeconds)
          UnblockCreate(g_create_blocked[i].key);
+
+   for(int i=ArraySize(g_market_wait)-1;i>=0;i--)
+      if((now-g_market_wait[i].last_try)>InpStateTTLSeconds)
+         MarketWaitRemove(g_market_wait[i].key);
 
    for(int i=ArraySize(g_alerts)-1;i>=0;i--)
    {
-      if(g_alerts[i].active || (now-g_alerts[i].last)<=CM_STATE_TTL_SECONDS)
+      if(g_alerts[i].active || (now-g_alerts[i].last)<=InpStateTTLSeconds)
          continue;
       int n=ArraySize(g_alerts);
       for(int j=i;j<n-1;j++)g_alerts[j]=g_alerts[j+1];
@@ -2295,6 +2511,56 @@ bool Validate()
    {
       Print("[CM SLAVE] Telegram activado sin token o sin chat ID: "
             "complete ambos o desactive InpEnableTelegram.");
+      return false;
+   }
+   if(InpStateTTLSeconds<60)
+   {
+      Print("[CM SLAVE] InpStateTTLSeconds debe ser 60 o mayor.");
+      return false;
+   }
+   if(InpSnapshotReadAttempts<1 || InpSnapshotReadAttempts>10)
+   {
+      Print("[CM SLAVE] InpSnapshotReadAttempts debe estar entre 1 y 10.");
+      return false;
+   }
+   if(InpSnapshotReadRetryMs<0 || InpSnapshotReadRetryMs>200)
+   {
+      Print("[CM SLAVE] InpSnapshotReadRetryMs debe estar entre 0 y 200.");
+      return false;
+   }
+   // La pausa entre lecturas bloquea el hilo del EA, asi que el presupuesto
+   // total de reintentos por canal se mantiene por debajo de medio segundo.
+   if((InpSnapshotReadAttempts-1)*InpSnapshotReadRetryMs>500)
+   {
+      Print("[CM SLAVE] Los reintentos de lectura no pueden sumar mas de 500 ms por canal.");
+      return false;
+   }
+   if(InpMarketClosedRetrySeconds<5)
+   {
+      Print("[CM SLAVE] InpMarketClosedRetrySeconds debe ser 5 o mayor.");
+      return false;
+   }
+   // Telegram rechaza mensajes de mas de 4096 caracteres.
+   if(InpTelegramChunkChars<200 || InpTelegramChunkChars>4000)
+   {
+      Print("[CM SLAVE] InpTelegramChunkChars debe estar entre 200 y 4000.");
+      return false;
+   }
+   if(InpTelegramQueueMax<1 || InpTelegramQueueMax>500)
+   {
+      Print("[CM SLAVE] InpTelegramQueueMax debe estar entre 1 y 500.");
+      return false;
+   }
+   if(InpTelegramSendsPerCycle<1 || InpTelegramSendsPerCycle>10)
+   {
+      Print("[CM SLAVE] InpTelegramSendsPerCycle debe estar entre 1 y 10.");
+      return false;
+   }
+   // Cada envio bloquea hasta InpTelegramTimeoutMs: el ciclo no puede quedarse
+   // atascado mas de cinco segundos vaciando la cola.
+   if(InpTelegramSendsPerCycle*InpTelegramTimeoutMs>5000)
+   {
+      Print("[CM SLAVE] InpTelegramSendsPerCycle por InpTelegramTimeoutMs no puede pasar de 5000 ms.");
       return false;
    }
    return BuildConfig();

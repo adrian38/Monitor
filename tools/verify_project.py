@@ -184,7 +184,7 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
         # A long grouped alert must be split: Telegram drops anything over 4096
         # characters and the whole notice would be lost.
         "TgSplit(",
-        "CM_TG_CHUNK_CHARS",
+        "InpTelegramChunkChars",
         # A notice that could not be delivered waits in a bounded queue.
         "TgEnqueue(",
         "TgFlush(",
@@ -232,6 +232,15 @@ def check_automatic_corrections(slave: str, failures: list[str]) -> None:
         "SymbolAcceptsNewOrders(",
         # Alerts about tickets that no longer exist must be closed.
         "ResolveVanishedAlerts(",
+        # A closed market is a wait, not a failure: one notice, spaced retries
+        # and the correction as soon as the session opens.
+        "SymbolSessionOpen(",
+        "TradeRetcodeIsMarketClosed(",
+        "TRADE_RETCODE_MARKET_CLOSED",
+        "MarketClosedNotice(",
+        "MarketWaitDue(",
+        "ClearMarketWait(",
+        "AlertOnce(",
     )
     for token in required:
         require(token in slave, f"slave: automatic correction missing: {token}", failures)
@@ -242,6 +251,66 @@ def check_automatic_corrections(slave: str, failures: list[str]) -> None:
     # Correction notices are mandatory; the old opt-out switches are gone.
     for dead in ("InpNotifyDeleteSuccess", "InpNotifyDeleteFailure"):
         require(dead not in slave, f"slave: removed input still referenced: {dead}", failures)
+
+
+def check_tunables(master: str, slave: str, failures: list[str]) -> None:
+    """Every timer is an input carrying the value the EA used when it was fixed."""
+    expected = {
+        "slave": {
+            "InpStateTTLSeconds": "3600",
+            "InpSnapshotReadAttempts": "3",
+            "InpSnapshotReadRetryMs": "15",
+            "InpMarketClosedRetrySeconds": "60",
+            "InpTelegramChunkChars": "3000",
+            "InpTelegramQueueMax": "40",
+            "InpTelegramSendsPerCycle": "2",
+        },
+        "master": {"InpPublishFailLogSeconds": "10"},
+    }
+    source = {"master": master, "slave": slave}
+
+    for name, inputs in expected.items():
+        for input_name, default in inputs.items():
+            declared = re.search(
+                rf"^input\s+int\s+{input_name}\s*=\s*{default}\s*;",
+                source[name],
+                re.MULTILINE,
+            )
+            require(
+                bool(declared),
+                f"{name}: {input_name} must be an input defaulting to {default}",
+                failures,
+            )
+            # An input nobody reads is a knob that does nothing.
+            require(
+                source[name].count(input_name) > 1,
+                f"{name}: {input_name} is declared but never used",
+                failures,
+            )
+        # Every input needs a bound, or a typo in the dialog breaks the EA.
+        for input_name in inputs:
+            require(
+                input_name in source[name].split("bool Validate()")[-1]
+                or input_name in source[name].split("int OnInit()")[-1],
+                f"{name}: {input_name} is not validated at init",
+                failures,
+            )
+
+    for dead in (
+        "CM_STATE_TTL_SECONDS",
+        "CM_READ_ATTEMPTS",
+        "CM_TG_CHUNK_CHARS",
+        "CM_TG_QUEUE_MAX",
+        "CM_TG_FLUSH_PER_CYCLE",
+    ):
+        require(dead not in slave, f"slave: hardcoded timer still present: {dead}", failures)
+
+    # The channel length is part of the shared contract, not a tunable.
+    require(
+        "#define CM_CHANNEL_MAX_LEN" in master and "#define CM_CHANNEL_MAX_LEN" in slave,
+        "channel length must stay a shared constant",
+        failures,
+    )
 
 
 def check_context(failures: list[str]) -> None:
@@ -276,6 +345,7 @@ def main() -> int:
     check_publication(source["master"], failures)
     check_telegram_contract(source["slave"], failures)
     check_automatic_corrections(source["slave"], failures)
+    check_tunables(source["master"], source["slave"], failures)
     check_context(failures)
     check_documentation(failures)
 

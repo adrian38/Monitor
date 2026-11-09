@@ -71,6 +71,47 @@ exacta salvo el ruido de coma flotante.
 - Un aviso sobre un ticket que ya no existe se cierra con `RESUELTO`. Antes
   quedaba activo para siempre: ni se resolvía ni podía caducar.
 
+## Ajustes expuestos
+
+Todos los temporizadores y límites internos son `input` desde la v1.17, con el
+valor que el EA usaba fijo como valor por defecto: `InpStateTTLSeconds`,
+`InpSnapshotReadAttempts`, `InpSnapshotReadRetryMs`,
+`InpMarketClosedRetrySeconds`, `InpTelegramChunkChars`, `InpTelegramQueueMax`,
+`InpTelegramSendsPerCycle` en el Slave, e `InpPublishFailLogSeconds` en el
+Master. Cada uno se valida en el arranque con un motivo en el log, y dos de esos
+límites protegen el ciclo completo:
+
+- los reintentos de lectura no pueden sumar más de 500 ms por canal, porque la
+  pausa bloquea el hilo del EA;
+- `InpTelegramSendsPerCycle` por `InpTelegramTimeoutMs` no puede pasar de
+  5000 ms, para que vaciar la cola no atasque el ciclo.
+
+`CM_CHANNEL_MAX_LEN` y `CM_SNAPSHOT_SCHEMA` siguen siendo constantes: forman
+parte del contrato compartido con el otro EA, no son preferencias.
+
+## Mercado cerrado
+
+Con dos brókers distintos los horarios de sesión no tienen por qué coincidir, y
+el Master puede seguir publicando cambios mientras la sesión del Slave está
+cerrada. Un rechazo por mercado cerrado no es un fallo de la copia: no hay nada
+que decidir hasta que abra.
+
+- Antes de cada corrección se consulta la sesión del símbolo con
+  `SymbolInfoSessionTrade` para el día del servidor. Un símbolo sin sesiones
+  declaradas se da por abierto y se delega en el retcode: bloquear por una
+  heurística de cotizaciones dejaría sin corregir un instrumento poco líquido
+  durante su propia sesión.
+- Los retcodes `TRADE_RETCODE_MARKET_CLOSED`, `TRADE_RETCODE_TRADE_DISABLED` y
+  `TRADE_RETCODE_PRICE_OFF` se clasifican como espera, no como fallo. Hace falta
+  además del calendario porque un festivo no aparece en las sesiones.
+- Mientras dura la espera se envía un único `BLOQUEADO`, el recordatorio
+  `ALERTA` del problema se mantiene sin reenviar y el reintento se espacia a
+  `InpMarketClosedRetrySeconds`. Sin esto, un fin de semana producía del orden
+  de 30.000 órdenes rechazadas y 11.000 mensajes por problema, y la cola de
+  Telegram acababa descartando avisos.
+- Al abrir la sesión, la corrección sale adelante y se envía el `RESUELTO`
+  normal. El panel muestra cuántos problemas están esperando apertura.
+
 ## Permisos y precios antes de corregir
 
 - El permiso de trading del terminal, del EA y de la cuenta se comprueba una

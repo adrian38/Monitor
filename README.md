@@ -55,6 +55,12 @@ necesario, el comentario propietario. En modo multi-master, las cuatro listas
 `InpMasterChannels`, `InpOwnerComments`, `InpMasterProfiles` e
 `InpVolumeMultipliers` son posicionales y deben tener la misma longitud.
 
+Los temporizadores y límites internos están expuestos en el grupo
+`TIMERS / LIMITES INTERNOS` del Slave y `TIMERS` del Master, con los valores que
+el EA usaba fijos como valores por defecto. Si el mercado del símbolo está
+cerrado —algo normal cuando los dos brokers no comparten horario— la corrección
+queda en espera con un solo aviso y se aplica al abrir la sesión.
+
 Cuando los brokers nombran un instrumento de forma diferente, usa
 `InpSymbolMaps` con entradas `CANAL,SIMBOLO_MASTER,SIMBOLO_SLAVE` separadas por
 punto y coma.

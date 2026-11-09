@@ -29,6 +29,11 @@ input long   InpFilterMagic         = -1;   // -1 = all
 input string InpSymbolsFilter       = "";   // empty = all; comma/semicolon separated
 input string InpSymbolsIgnore       = "";   // symbols to exclude; comma/semicolon separated
 
+input group "===== TIMERS ====="
+// Segundos entre avisos de fallo de publicacion en el log. Un fallo continuo no
+// debe inundar el diario; el panel lo muestra siempre.
+input int    InpPublishFailLogSeconds = 10;
+
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog          = false;
 
@@ -320,10 +325,10 @@ bool Publish()
       return true;
    }
 
-   // Un fallo persistente no debe inundar el log: se informa como mucho una
-   // vez cada diez segundos, pero siempre queda visible en el panel.
+   // Un fallo persistente no debe inundar el log: se informa como mucho una vez
+   // cada InpPublishFailLogSeconds, pero siempre queda visible en el panel.
    datetime now=TimeLocal();
-   if((now-g_last_log)>=10)
+   if((now-g_last_log)>=InpPublishFailLogSeconds)
    {
       g_last_log=now;
       PrintFormat("[CM MASTER] Snapshot write failed. %s",g_last_error);
@@ -400,6 +405,12 @@ int OnInit()
    if(Trim(InpAccountNick)=="")
    {
       Print("[CM MASTER] InpAccountNick no puede estar vacio.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   if(InpPublishFailLogSeconds<1)
+   {
+      Print("[CM MASTER] InpPublishFailLogSeconds debe ser 1 o mayor.");
       return INIT_PARAMETERS_INCORRECT;
    }
 
