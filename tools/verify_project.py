@@ -68,7 +68,7 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
         '"ID SLAVE: "',
         '"Estado: POSICIÓN ACTIVA',
         '"Estado: ORDEN PENDIENTE',
-        '"Volumen que debe aparecer en Slave: "',
+        '"Volumen Slave: "',
         '"Stop Loss: "',
         '"Take Profit: "',
         '"Ticket Master: "',

@@ -15,8 +15,8 @@ mismo bloque de la posición; sólo se muestran los campos que difieren.
 
 Una orden pendiente Master que falte en Slave incluye todo lo necesario para
 revisarla o crearla manualmente: tipo, símbolos Master/Slave, ticket Master,
-volumen Master, volumen final que debe aparecer en Slave normalizado al paso
-del símbolo, precio de entrada, SL y TP. El multiplicador se usa internamente
+volumen Master, `Volumen Slave` final normalizado al paso del símbolo, precio
+de entrada, SL y TP. El multiplicador se usa internamente
 pero no se muestra. Los valores cero aparecen como `SIN SL` o `SIN TP`.
 
 Los niveles son:
