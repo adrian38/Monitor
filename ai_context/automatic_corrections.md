@@ -4,13 +4,15 @@ El Slave sólo puede corregir automáticamente cuatro clases de problema:
 
 1. SL o TP distintos en una posición activa: modifica exclusivamente SL/TP;
    nunca abre, cierra ni cambia volumen de posiciones.
-2. Pendiente faltante: crea BUY/SELL LIMIT o BUY/SELL STOP con símbolo mapeado,
-   volumen Slave normalizado, entrada, SL y TP. Las STOP LIMIT no se crean
-   automáticamente porque el snapshot v1 no transporta su precio stop-limit.
+2. Pendiente faltante: crea la copia con símbolo mapeado, volumen Slave
+   normalizado, entrada, SL y TP. Desde el esquema 3 el snapshot transporta el
+   precio stop-limit, así que también se pueden crear BUY/SELL STOP LIMIT; con
+   un Master de esquema 1 o 2 ese precio no llega y la creación queda
+   `BLOQUEADO`.
 3. Pendiente extra: mantiene la regla conservadora existente y sólo borra si el
    Master no tiene ninguna pendiente que pueda justificarla.
-4. Precio, SL o TP distintos en una pendiente emparejada: modifica esos valores
-   conservando tipo de tiempo, expiración y precio stop-limit del Slave.
+4. Precio, precio límite, SL o TP distintos en una pendiente emparejada:
+   modifica esos valores conservando tipo de tiempo y expiración de la copia.
 
 Toda detección envía primero `ALERTA`. La acción se retrasa
 `InpAutoFixPersistSeconds` —o `InpExtraPendingConfirmSeconds` para borrado— para
@@ -23,18 +25,34 @@ Si Copyix resuelve durante la espera, se cancela el candidato y se envía
 reintentos en cada ciclo. Los avisos de corrección no son opcionales: los
 interruptores `InpNotifyDeleteSuccess` e `InpNotifyDeleteFailure` desaparecieron.
 
-La creación sólo se intenta sobre un símbolo permitido por los filtros de la
-instancia y disponible en el terminal, con tipo creable y volumen válido;
-cualquier otro caso produce `BLOQUEADO` sin tocar la cuenta. Tras enviar la
-orden se comprueba que la copia es visible como propia de ese canal. Si no lo
-es, se avisa `CRÍTICO` y la creación automática de ese ticket Master queda
-bloqueada hasta que el emparejamiento tenga éxito: reintentar duplicaría la
-pendiente en cada ventana. La comparación de valores de una pendiente
-emparejada depende de `InpMonitorPendingOrders`.
+## Comprobaciones previas
+
+Antes de enviar nada se exige, en este orden:
+
+- permiso de trading del terminal, del EA en el gráfico y de la cuenta;
+- símbolo permitido por los filtros de la instancia y disponible en el terminal;
+- modo de trading del símbolo compatible con el sentido de la orden;
+- volumen dentro del rango del bróker antes de cualquier recorte: crear fuera
+  de rango significaría copiar un tamaño distinto del pedido por el Master;
+- distancia mínima del bróker para el precio de entrada y para SL y TP, con
+  precios actuales disponibles.
+
+Cualquier comprobación fallida produce `BLOQUEADO` con el motivo concreto y no
+toca la cuenta. Esto sustituye al `CRÍTICO` repetido en cada ventana que
+generaba antes una orden estructuralmente imposible. Un rechazo por modo de
+llenado se reintenta una sola vez con `ORDER_FILLING_RETURN`.
+
+Tras enviar la orden se comprueba que la copia es visible como propia de ese
+canal **y** que resulta emparejable con la orden Master. Si no lo es, se avisa
+`CRÍTICO` y la creación automática de ese ticket Master queda bloqueada hasta
+que el emparejamiento tenga éxito: reintentar duplicaría la pendiente en cada
+ventana. La comparación de valores de una pendiente emparejada depende de
+`InpMonitorPendingOrders`.
 
 El estado interno —ventanas de persistencia, avisos cerrados y bloqueos de
 creación— caduca tras una hora sin usarse, para que una sesión larga no acumule
-claves de tickets antiguos.
+claves de tickets antiguos. Un aviso cuyo ticket ya no existe se cierra con
+`RESUELTO` en lugar de quedarse activo para siempre.
 
 Los controles son `InpAutoFixPositionSLTP`, `InpAutoCreateMissingPending`,
 `InpAutoModifyPending`, `InpAutoDeleteExtraPending` e

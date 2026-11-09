@@ -19,8 +19,9 @@ mismo bloque de la posición; sólo se muestran los campos que difieren.
 Una orden pendiente Master que falte en Slave incluye todo lo necesario para
 revisarla o crearla manualmente: tipo, símbolos Master/Slave, ticket Master,
 volumen Master, `Volumen Slave` final normalizado al paso del símbolo, precio
-de entrada, SL y TP. El multiplicador se usa internamente
-pero no se muestra. Los valores cero aparecen como `SIN SL` o `SIN TP`.
+de entrada, SL y TP. Una STOP LIMIT añade `Precio límite`. El multiplicador se
+usa internamente pero no se muestra. Los valores cero aparecen como `SIN SL` o
+`SIN TP`.
 
 Los niveles son:
 
@@ -31,6 +32,17 @@ Los niveles son:
 - `🟢 COPYMONITOR — RESUELTO`: el problema avisado ya no existe, lo haya
   corregido CopyMonitor o la propia copiadora.
 
-Cada problema emite un `ALERTA` al detectarse y un único `RESUELTO` al cerrarse.
-Una corrección automática fallida emite `CRÍTICO` con retcode y detalle.
+Cada problema emite un `ALERTA` al detectarse y un único `RESUELTO` al cerrarse,
+incluido el caso en que la operación avisada simplemente deja de existir. Una
+corrección automática fallida emite `CRÍTICO` con retcode y detalle.
+
+## Entrega
+
+El envío usa `POST`, así que el texto no depende del límite de longitud de una
+URL. Un aviso de más de 3000 caracteres se trocea por líneas, porque Telegram
+rechaza todo lo que pase de 4096 y el aviso completo se perdería. Lo que no
+logra salir espera en una cola acotada y se reintenta en los ciclos siguientes;
+el panel muestra cuántos avisos esperan, cuántos se descartaron por cola llena y
+el último error. `InpEnableTelegram` sin token o sin chat ID detiene el arranque:
+dejaría al usuario sin ningún aviso y sin saberlo.
 

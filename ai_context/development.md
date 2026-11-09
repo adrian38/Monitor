@@ -19,6 +19,16 @@ versión. No cambiar una versión sólo por documentación externa al EA.
 - Revisar el diff completo y buscar referencias de parámetros o funciones
   modificados.
 - Compilar Master y Slave con MetaEditor cuando exista una ruta configurada.
+  Los fuentes viven fuera del directorio de datos de MT5, así que hace falta
+  indicar la carpeta `MQL5` que contiene `Include\Trade\Trade.mqh`:
+
+  ```
+  metaeditor64.exe /compile:"<ruta>\CopyMonitor_Slave_MT5_v1_17_MULTI.mq5" ^
+                   /inc:"<terminal>\MQL5" /log:"<log>"
+  ```
+
+  El código de salida de MetaEditor no distingue el éxito: hay que leer la
+  línea `Result:` del log, que está en UTF-16.
 - La compilación no autoriza a adjuntar EAs, lanzar terminales ni tocar cuentas.
 - Para cambios de snapshot, verificar escritor y lector sobre el mismo esquema.
 - Informar compilaciones o pruebas omitidas y por qué.

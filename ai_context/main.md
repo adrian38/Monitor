@@ -14,6 +14,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   identificadores de cuenta y datos operativos exigidos en cada aviso.
 - [automatic_corrections.md](automatic_corrections.md): alcance autorizado,
   persistencia, revalidación y mensajes de resolución de los arreglos.
+- [robustness.md](robustness.md): publicación atómica, lectura reintentada,
+  validación de configuración, cola de avisos y guardas previas a corregir.
 
 El código es la autoridad sobre los detalles que no estén documentados aquí.
 Toda decisión duradera nueva debe añadirse a una nota temática y a este índice.
