@@ -68,8 +68,7 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
         '"ID SLAVE: "',
         '"Estado: POSICIÓN ACTIVA',
         '"Estado: ORDEN PENDIENTE',
-        '"Multiplicador: "',
-        '"Volumen esperado Slave: "',
+        '"Volumen que debe aparecer en Slave: "',
         '"Stop Loss: "',
         '"Take Profit: "',
         '"Ticket Master: "',
@@ -85,6 +84,11 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
             f"slave: internal routing data exposed in messages: {internal_label}",
             failures,
         )
+    require(
+        '"Multiplicador: "' not in slave,
+        "slave: internal multiplier exposed in Telegram messages",
+        failures,
+    )
 
 
 def check_context(failures: list[str]) -> None:

@@ -188,10 +188,6 @@ string StopText(const double value,const string empty_text)
    if(MathAbs(value)<1e-12) return empty_text;
    return PriceText(value);
 }
-string MultiplierText(const double value)
-{
-   return DoubleToString(value,4);
-}
 bool LoadOwners(Owner &o[])
 {
    ArrayResize(o,0);
@@ -473,8 +469,7 @@ string MasterPendingDetails(const Owner &o,const OrdRec &order)
       "Símbolo esperado Slave: "+slave_symbol+"\n"+
       "Ticket Master: "+StringFormat("%I64u",order.ticket)+"\n\n"+
       "Volumen Master: "+VolumeText(slave_symbol,order.vol)+"\n"+
-      "Multiplicador: "+MultiplierText(o.mult)+"\n"+
-      "Volumen esperado Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+      "Volumen que debe aparecer en Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
       "Precio de entrada: "+PriceText(order.price)+"\n"+
       "Stop Loss: "+StopText(order.sl,"SIN SL")+"\n"+
       "Take Profit: "+StopText(order.tp,"SIN TP");
@@ -636,8 +631,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Símbolo esperado Slave: "+slave_symbol+"\n"+
             "Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+"\n\n"+
             "Volumen Master: "+VolumeText(slave_symbol,snap.pos[i].vol)+"\n"+
-            "Multiplicador: "+MultiplierText(o.mult)+"\n"+
-            "Volumen esperado Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
+            "Volumen que debe aparecer en Slave: "+VolumeText(slave_symbol,expected_volume)+"\n"+
             "Precio de entrada: "+PriceText(snap.pos[i].price)+"\n"+
             "Stop Loss: "+StopText(snap.pos[i].sl,"SIN SL")+"\n"+
             "Take Profit: "+StopText(snap.pos[i].tp,"SIN TP");
