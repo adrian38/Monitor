@@ -227,6 +227,7 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
 # the trade API underneath differs.
 SHARED_CORRECTION_TOKENS = (
     "InpAutoFixPositionSLTP",
+    "InpAutoFixPendingSLTP",
     "InpAutoCreateMissingPending",
     "InpAutoModifyPending",
     "InpAutoFixPersistSeconds",

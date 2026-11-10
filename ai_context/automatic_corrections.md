@@ -61,7 +61,9 @@ creación— caduca tras una hora sin usarse, para que una sesión larga no acum
 claves de tickets antiguos. Un aviso cuyo ticket ya no existe se cierra con
 `RESUELTO` en lugar de quedarse activo para siempre.
 
-Los controles son `InpAutoFixPositionSLTP`, `InpAutoCreateMissingPending`,
-`InpAutoModifyPending`, `InpAutoDeleteExtraPending` e
-`InpAutoFixPersistSeconds`. No ejecutar pruebas sobre cuentas reales sin orden
-explícita del usuario.
+Los controles son `InpAutoFixPositionSLTP` para SL/TP de posiciones activas,
+`InpAutoFixPendingSLTP` para SL/TP de pendientes, `InpAutoModifyPending` para
+precio de entrada y precio límite de pendientes, `InpAutoCreateMissingPending`,
+`InpAutoDeleteExtraPending` e `InpAutoFixPersistSeconds`. Al modificar una
+pendiente se conservan los campos cuyo interruptor esté desactivado. No ejecutar
+pruebas sobre cuentas reales sin orden explícita del usuario.

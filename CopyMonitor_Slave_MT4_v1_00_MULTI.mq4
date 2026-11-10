@@ -79,6 +79,7 @@ input int  InpVolumeToleranceSteps                    = 1;
 input bool InpMonitorPendingOrders                    = true;
 input bool InpExpectPendingCopies                     = true;
 input bool InpAutoFixPositionSLTP                     = true;
+input bool InpAutoFixPendingSLTP                      = true;
 input bool InpAutoCreateMissingPending                = true;
 input bool InpAutoModifyPending                       = true;
 input int  InpAutoFixPersistSeconds                   = 5;
@@ -178,8 +179,8 @@ struct Blocked { string key; datetime last_seen; };
 #define CM_CHANNEL_MAX_LEN     32
 
 // Margen con el que dos costes de emparejamiento se consideran el mismo. Solo
-// absorbe el ruido de coma flotante: por encima de el manda el coste, y por
-// debajo manda el ticket mas bajo, que es el criterio estable.
+// absorbe el ruido de coma flotante. Si dos candidatas quedan dentro del
+// margen, no existe una identidad suficiente y el enlace se rechaza.
 #define CM_MATCH_EPS           1e-6
 
 // Codigos de tipo que viajan en el snapshot. Son los de MQL5 porque el Master
@@ -1728,11 +1729,8 @@ double PosCost(const PosRec &m,const PosRec &s)
 {
    return MathAbs(m.price-s.price)/PointOf(s.symbol);
 }
-// Ningun emparejamiento puede depender del orden en que el terminal devuelve
-// sus colecciones: ese orden cambia en cuanto se cierra cualquier otra entrada
-// y haria que una pareja saltase de una evaluacion a la siguiente. Recorrer
-// los dos lados por ticket ascendente deja un resultado reproducible y, como
-// los dos brokers numeran de forma creciente, respeta el orden de apertura.
+// El recorrido por ticket hace reproducible la evaluacion y los avisos, pero
+// nunca se usa como identidad: un empate entre candidatas bloquea el enlace.
 void SortPosByTicket(PosRec &a[])
 {
    int n=ArraySize(a);
@@ -1808,6 +1806,7 @@ int MatchPosByStops(const Owner &o,const PosRec &m,const PosRec &sp[],const bool
 
    int best=-1;
    double cost=1e100;
+   int tied=0;
 
    for(int j=0;j<ArraySize(sp);j++)
    {
@@ -1822,12 +1821,17 @@ int MatchPosByStops(const Owner &o,const PosRec &m,const PosRec &sp[],const bool
       {
          cost=c;
          best=j;
+         tied=1;
       }
+      else if(best>=0 && c<=cost+CM_MATCH_EPS)
+         tied++;
    }
-   return best;
+   // Dos candidatas igualmente buenas siguen sin aportar una identidad. No se
+   // permite que el orden del array decida cual se modifica.
+   return (tied==1 ? best : -1);
 }
-// Devuelve ademas cuantas copias empatan en el coste minimo. Con mas de una,
-// la pareja no la decide ningun dato: la fija el orden de apertura.
+// Devuelve ademas cuantas copias empatan en el coste minimo. El llamador solo
+// puede aceptar el resultado cuando tied==1.
 int MatchPosByPrice(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[],int &tied)
 {
    int best=-1;
@@ -1841,8 +1845,6 @@ int MatchPosByPrice(const Owner &o,const PosRec &m,const PosRec &sp[],const bool
 
       double c=PosCost(m,sp[j]);
 
-      // Estricto a la baja: con el array ordenado por ticket, un coste igual
-      // deja ganar siempre a la copia mas antigua.
       if(c<cost-CM_MATCH_EPS)
       {
          cost=c;
@@ -1853,6 +1855,19 @@ int MatchPosByPrice(const Owner &o,const PosRec &m,const PosRec &sp[],const bool
          tied++;
    }
    return best;
+}
+void MarkPosPriceTies(const Owner &o,const PosRec &m,const PosRec &sp[],
+                      const bool &used[],bool &marked[])
+{
+   double best_cost=1e100;
+   for(int j=0;j<ArraySize(sp);j++)
+      if(!used[j] && PosCompatible(o,m,sp[j]))
+         best_cost=MathMin(best_cost,PosCost(m,sp[j]));
+
+   for(int j=0;j<ArraySize(sp);j++)
+      if(!used[j] && PosCompatible(o,m,sp[j]) &&
+         PosCost(m,sp[j])<=best_cost+CM_MATCH_EPS)
+         marked[j]=true;
 }
 int CandIndex(const string key)
 {
@@ -1913,6 +1928,10 @@ void CheckOpen(const Owner &o,const Snap &snap)
    ArrayResize(su,ArraySize(sp));
    ArrayInitialize(su,false);
 
+   bool ambiguous_slave[];
+   ArrayResize(ambiguous_slave,ArraySize(sp));
+   ArrayInitialize(ambiguous_slave,false);
+
    int assign[];
    ArrayResize(assign,ArraySize(snap.pos));
    ArrayInitialize(assign,-1);
@@ -1948,7 +1967,9 @@ void CheckOpen(const Owner &o,const Snap &snap)
       int ignored_tied=0;
       int paired=MatchPosByPrice(o,snap.pos[i],sp,su,ignored_tied);
 
-      if(paired>=0)
+      if(ignored_tied>1)
+         MarkPosPriceTies(o,snap.pos[i],sp,su,su);
+      else if(paired>=0)
       {
          assign[i]=paired;
          su[paired]=true;
@@ -1964,13 +1985,24 @@ void CheckOpen(const Owner &o,const Snap &snap)
          continue;
 
       int best=assign[i];
-      bool by_order=false;
+      int tied=0;
 
       if(best<0)
-      {
-         int tied=0;
          best=MatchPosByPrice(o,snap.pos[i],sp,su,tied);
-         by_order=(tied>1);
+
+      if(tied>1)
+      {
+         problems=true;
+         string ambiguity=
+            "\n\nPROBLEMA:\nNo se puede enlazar de forma fiable una posición Master con su copia Slave.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+            "Ticket Master: "+TicketText(snap.pos[i].ticket)+"\n"+
+            "Copias Slave igualmente compatibles: "+IntegerToString(tied)+
+            "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna corrección automática.";
+         details+=ambiguity;
+         MarkPosPriceTies(o,snap.pos[i],sp,su,ambiguous_slave);
+         continue;
       }
 
       if(best<0)
@@ -2024,12 +2056,6 @@ void CheckOpen(const Owner &o,const Snap &snap)
             problem_detail+=
                "\nTP Master: "+StopText(snap.pos[i].tp,"SIN TP")+
                "\nTP Slave: "+StopText(sp[best].tp,"SIN TP");
-
-         if(by_order)
-            problem_detail+=
-               "\n\nAVISO:\nHay otra entrada idéntica en la cuenta y ningún valor comparado "+
-               "las distingue. La pareja se ha fijado por el orden de apertura, que es "+
-               "estable pero no es una identidad: conviene revisarla a mano.";
 
          string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+problem_detail+
             "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.";
@@ -2111,7 +2137,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
    // Master-ticket copies.
    for(int j=0;j<ArraySize(sp);j++)
    {
-      if(su[j] || o.profile!=PROFILE_PORTFOLIO46)
+      if(su[j] || ambiguous_slave[j] || o.profile!=PROFILE_PORTFOLIO46)
          continue;
 
       problems=true;
@@ -2230,6 +2256,7 @@ int MatchOrdByValues(const Owner &o,const OrdRec &m,const OrdRec &so[],const boo
 
    int best=-1;
    double best_delta=1e100;
+   int tied=0;
 
    for(int s=0;s<ArraySize(so);s++)
    {
@@ -2244,12 +2271,15 @@ int MatchOrdByValues(const Owner &o,const OrdRec &m,const OrdRec &so[],const boo
       {
          best_delta=delta;
          best=s;
+         tied=1;
       }
+      else if(best>=0 && delta<=best_delta+CM_MATCH_EPS)
+         tied++;
    }
-   return best;
+   return (tied==1 ? best : -1);
 }
-// Devuelve ademas cuantas copias empatan en la distancia minima. Con mas de
-// una, la pareja no la decide ningun dato: la fija el orden de apertura.
+// Devuelve ademas cuantas copias empatan en la distancia minima. El llamador
+// solo puede aceptar el resultado cuando tied==1.
 int MatchOrdByPrice(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[],int &tied)
 {
    int best=-1;
@@ -2263,8 +2293,6 @@ int MatchOrdByPrice(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool
 
       double delta=MathAbs(m.price-so[s].price);
 
-      // Estricto a la baja: con el array ordenado por ticket, una distancia
-      // igual deja ganar siempre a la copia mas antigua.
       if(delta<best_delta-CM_MATCH_EPS)
       {
          best_delta=delta;
@@ -2275,6 +2303,19 @@ int MatchOrdByPrice(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool
          tied++;
    }
    return best;
+}
+void MarkOrdPriceTies(const Owner &o,const OrdRec &m,const OrdRec &so[],
+                      const bool &used[],bool &marked[])
+{
+   double best_delta=1e100;
+   for(int s=0;s<ArraySize(so);s++)
+      if(!used[s] && OrdCompatible(o,m,so[s]))
+         best_delta=MathMin(best_delta,MathAbs(m.price-so[s].price));
+
+   for(int s=0;s<ArraySize(so);s++)
+      if(!used[s] && OrdCompatible(o,m,so[s]) &&
+         MathAbs(m.price-so[s].price)<=best_delta+CM_MATCH_EPS)
+         marked[s]=true;
 }
 int BlockedIndex(const string key)
 {
@@ -2407,7 +2448,8 @@ int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,s
 
    return CM_CREATE_DONE;
 }
-bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const long slave_ticket)
+bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const long slave_ticket,
+                       const bool change_price,const bool change_stops)
 {
    // Igual que en FixPositionStops: sin enviar nada no hay error de trading
    // que interpretar.
@@ -2421,20 +2463,23 @@ bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const long slave_tick
    // tenia fecha de caducidad.
    datetime expiration=OrderExpiration();
    string symbol=live.symbol;
+   double target_price=change_price ? master.price : live.price;
+   double target_sl=change_stops ? master.sl : live.sl;
+   double target_tp=change_stops ? master.tp : live.tp;
 
    ResetLastError();
-   bool sent=OrderModify((int)slave_ticket,NormPrice(symbol,master.price),
-                         NormPrice(symbol,master.sl),NormPrice(symbol,master.tp),
+   bool sent=OrderModify((int)slave_ticket,NormPrice(symbol,target_price),
+                         NormPrice(symbol,target_sl),NormPrice(symbol,target_tp),
                          expiration,clrNONE);
    if(!TradeOk(sent)) return false;
    if(!SelectLivePending(slave_ticket)) return false;
 
    double point=PointOf(symbol);
    double tol=InpSLTPTolerancePoints*point;
-   return PriceEq(OrderOpenPrice(),master.price,
+   return PriceEq(OrderOpenPrice(),target_price,
                   InpPendingPriceTolerancePoints*point) &&
-          StopEq(OrderStopLoss(),master.sl,tol) &&
-          StopEq(OrderTakeProfit(),master.tp,tol);
+          StopEq(OrderStopLoss(),target_sl,tol) &&
+          StopEq(OrderTakeProfit(),target_tp,tol);
 }
 
 //---------------- stale alert cleanup ----------------
@@ -2560,6 +2605,10 @@ void CheckPending(const Owner &o,const Snap &snap)
    ArrayResize(slave_protected,ArraySize(so));
    ArrayInitialize(slave_protected,false);
 
+   bool ambiguous_slave[];
+   ArrayResize(ambiguous_slave,ArraySize(so));
+   ArrayInitialize(ambiguous_slave,false);
+
    int assign[];
    ArrayResize(assign,ArraySize(snap.ord));
    ArrayInitialize(assign,-1);
@@ -2591,14 +2640,14 @@ void CheckPending(const Owner &o,const Snap &snap)
          continue;
 
       int best=assign[m];
+      int ignored_tied=0;
 
       if(best<0)
-      {
-         int ignored_tied=0;
          best=MatchOrdByPrice(o,snap.ord[m],so,slave_protected,ignored_tied);
-      }
 
-      if(best>=0)
+      if(ignored_tied>1)
+         MarkOrdPriceTies(o,snap.ord[m],so,slave_protected,slave_protected);
+      else if(best>=0)
       {
          assign[m]=best;
          slave_protected[best]=true;
@@ -2631,14 +2680,32 @@ void CheckPending(const Owner &o,const Snap &snap)
       }
 
       int best=assign[m];
-      bool by_order=false;
+      int tied=0;
 
       if(best<0)
-      {
-         int tied=0;
          best=MatchOrdByPrice(o,snap.ord[m],so,slave_protected,tied);
-         by_order=(tied>1);
+
+      string ambiguity_key="PAMBMASTER|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
+
+      if(tied>1)
+      {
+         master_matched[m]=true;
+         string ambiguity=
+            "\n\nPROBLEMA:\nNo se puede enlazar de forma fiable una orden pendiente Master con su copia Slave.\n\n"+
+            "Estado: ORDEN PENDIENTE\n"+
+            "Símbolo Master: "+snap.ord[m].symbol+"\n"+
+            "Ticket Master: "+TicketText(snap.ord[m].ticket)+"\n"+
+            "Copias Slave igualmente compatibles: "+IntegerToString(tied)+
+            "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna modificación automática.";
+         PersistAlert(ambiguity_key,AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+ambiguity);
+         MarkOrdPriceTies(o,snap.ord[m],so,slave_protected,ambiguous_slave);
+         continue;
       }
+
+      ResolveAlert(ambiguity_key,
+         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+         "\n\nPROBLEMA RESUELTO:\nLa orden Master ya no presenta un enlace ambiguo."+
+         "\nTicket Master: "+TicketText(snap.ord[m].ticket));
 
       if(best>=0)
       {
@@ -2700,24 +2767,29 @@ void CheckPending(const Owner &o,const Snap &snap)
                detail+="\nTP Master: "+StopText(snap.ord[m].tp,"SIN TP")+
                        "\nTP Slave: "+StopText(so[best].tp,"SIN TP");
 
-            if(by_order)
-               detail+=
-               "\n\nAVISO:\nHay otra entrada idéntica en la cuenta y ningún valor comparado "+
-               "las distingue. La pareja se ha fijado por el orden de apertura, que es "+
-               "estable pero no es una identidad: conviene revisarla a mano.";
+            bool change_price=InpAutoModifyPending && (price_bad || limit_bad);
+            bool change_stops=InpAutoFixPendingSLTP && (sl_bad || tp_bad);
+            string pending_action=(change_price || change_stops)
+               ? "\n\nACCIÓN:\nEsperando que el problema persista antes de corregir los valores habilitados automáticamente."
+               : "\n\nACCIÓN:\nSe ha avisado, pero la corrección automática de los valores afectados está desactivada.";
 
             if(MarketWaiting(fix_key))
                KeepAlert(alert_key);
             else
-               PersistAlert(alert_key,
-                  AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
-                  "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.");
+               PersistAlert(alert_key,AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
+                                         detail+pending_action);
 
-            if(InpAutoModifyPending && !g_trade_busy &&
+            if((change_price || change_stops) && !g_trade_busy &&
                ConfirmProblem(fix_key,InpAutoFixPersistSeconds) &&
                MarketWaitDue(fix_key))
             {
                string blocked_reason="";
+               double target_price=change_price ? snap.ord[m].price : so[best].price;
+               double target_sl=change_stops ? snap.ord[m].sl : so[best].sl;
+               double target_tp=change_stops ? snap.ord[m].tp : so[best].tp;
+               double target_stoplimit=so[best].stoplimit;
+               if(change_price && IsStopLimitType(so[best].type) && snap.ord[m].stoplimit>0)
+                  target_stoplimit=snap.ord[m].stoplimit;
 
                if(!g_trade_allowed)
                {
@@ -2736,21 +2808,20 @@ void CheckPending(const Owner &o,const Snap &snap)
                      AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
                      "\n\nACCIÓN:\nNo se puede modificar automáticamente.\n"+blocked_reason);
                }
-               else if(!PendingPriceAcceptable(so[best].symbol,so[best].type,snap.ord[m].price,
-                                               snap.ord[m].sl,snap.ord[m].tp,
-                                               IsStopLimitType(so[best].type)
-                                                  ? (snap.ord[m].stoplimit>0 ? snap.ord[m].stoplimit : so[best].stoplimit)
-                                                  : 0.0,
+               else if(!PendingPriceAcceptable(so[best].symbol,so[best].type,target_price,
+                                               target_sl,target_tp,
+                                               IsStopLimitType(so[best].type) ? target_stoplimit : 0.0,
                                                blocked_reason))
                {
                   PersistAlert("PBLOCK|"+fix_key,
                      AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
                      "\n\nACCIÓN:\nNo se puede modificar automáticamente.\n"+blocked_reason);
                }
-               else if(ModifyPendingCopy(o,snap.ord[m],so[best].ticket))
+               else if(ModifyPendingCopy(o,snap.ord[m],so[best].ticket,
+                                         change_price,change_stops))
                {
                   Tg(AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
-                     "\n\nACCIÓN AUTOMÁTICA:\nPrecio, SL y TP corregidos correctamente.");
+                     "\n\nACCIÓN AUTOMÁTICA:\nLos valores habilitados de la orden pendiente se corrigieron correctamente.");
                   ClearAlert(alert_key);
                   ClearAlert("PBLOCK|"+fix_key);
                   ClearMarketWait(fix_key);
@@ -2926,7 +2997,7 @@ void CheckPending(const Owner &o,const Snap &snap)
    // Extra Slave pending cleanup.
    for(int s=0;s<ArraySize(so);s++)
    {
-      if(slave_protected[s])
+      if(slave_protected[s] || ambiguous_slave[s])
          continue;
 
       // Conservative deletion rule:

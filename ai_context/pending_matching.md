@@ -8,10 +8,12 @@ entrada genera una alerta y, tras persistir, una modificación. Lo mismo vale
 para el precio límite de una STOP LIMIT, que sólo se compara cuando el Master lo
 publica (esquema 3).
 
-Los dos lados se recorren por ticket ascendente, así que el resultado no
-depende del orden en que el terminal devuelve sus colecciones. Antes de nada se
-deshace la ambigüedad: cuando una pendiente Master admite dos o más copias
-libres compatibles, se ata la que ya coincide en todos los valores comparados.
+Los dos lados se recorren por ticket ascendente para que la evaluación sea
+reproducible, pero el ticket no desempata. Antes de nada se intenta resolver la
+ambigüedad por datos: cuando una pendiente Master admite dos o más copias libres
+compatibles, sólo se ata una si es la única que coincide en todos los valores
+comparados. Si varias candidatas siguen empatadas, se avisa, no se modifica
+ninguna, no se crea otra copia y ninguna candidata se trata como extra borrable.
 Ver [ambiguous_matching.md](ambiguous_matching.md).
 
 Las pendientes asociadas a tickets Master ignorados se protegen después y se

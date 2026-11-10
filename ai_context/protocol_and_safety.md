@@ -48,9 +48,11 @@ Ver [robustness.md](robustness.md).
   formadas: una entrada incompleta detiene el arranque en lugar de descartarse.
 - La tolerancia de volumen se expresa en pasos de volumen del símbolo Slave.
 - El emparejamiento no depende del orden de las colecciones del terminal: los
-  dos lados se recorren por ticket ascendente y un empate lo gana el ticket más
-  bajo. Dos entradas gemelas se desempatan antes por los valores que el Slave
-  compara. Ver [ambiguous_matching.md](ambiguous_matching.md).
+  dos lados se recorren por ticket ascendente sólo para que la evaluación sea
+  reproducible. Una pareja exige una candidata única; ningún empate se resuelve
+  por ticket u orden de apertura. Dos entradas gemelas intentan identificarse
+  antes por los valores que el Slave compara y, si siguen siendo ambiguas, se
+  avisa sin corregir. Ver [ambiguous_matching.md](ambiguous_matching.md).
 - Precio de entrada, SL y TP se comparan sólo cuando sus opciones están activas.
   El precio stop-limit se compara cuando el Master lo publica.
 - Los tickets Master configurados para ignorar no generan incidencias.
