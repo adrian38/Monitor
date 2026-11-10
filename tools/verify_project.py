@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_20_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_21_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT4_v1_00_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_00_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_01_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -251,6 +251,9 @@ SHARED_CORRECTION_TOKENS = (
     "SymbolAcceptsNewOrders(",
     # Alerts about tickets that no longer exist must be closed.
     "ResolveVanishedAlerts(",
+    "MasterPositionPresent(",
+    # Retiring a whole key family is only for a watch the user switched off.
+    "ClearAlertsWithPrefix(",
     # A closed market is a wait, not a failure: one notice, spaced retries
     # and the correction as soon as the session opens.
     "SymbolSessionOpen(",
@@ -277,6 +280,48 @@ def check_automatic_corrections(
     # Correction notices are mandatory; the old opt-out switches are gone.
     for dead in ("InpNotifyDeleteSuccess", "InpNotifyDeleteFailure"):
         require(dead not in slave, f"{name}: removed input still referenced: {dead}", failures)
+
+
+# Every problem the user is told about owns a key, and every key is closed
+# with ResolveAlert so the RESUELTO really goes out. A grouped per-channel key
+# could only be cleared once every problem under it had gone, so the common
+# case -- the Master opens first and the copy lands seconds later -- alerted
+# and never resolved.
+ALERT_KEY_FAMILIES = (
+    '"POSMISS|"',
+    '"POSAMB|"',
+    '"POSEXTRA|"',
+    '"ORDMISS|"',
+)
+
+
+def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
+    vanished = function_body(slave, "void ResolveVanishedAlerts(")
+    require(vanished is not None, f"{name}: ResolveVanishedAlerts missing", failures)
+
+    for family in ALERT_KEY_FAMILIES:
+        prefix = family.strip('"').rstrip("|")
+        require(family in slave, f"{name}: alert key family missing: {family}", failures)
+        require(
+            vanished is not None and f'f[0]=="{prefix}"' in vanished,
+            f"{name}: {family} is never closed when its ticket vanishes",
+            failures,
+        )
+
+    # The grouped alert is gone: it could only be cleared once every problem
+    # under it had disappeared, and it was cleared without a RESUELTO.
+    require(
+        'PersistAlert(key,msg)' not in slave,
+        f"{name}: the grouped OPEN alert is still raised",
+        failures,
+    )
+    for retired in ('ClearAlert("OPEN|"+o.channel)', 'ClearAlert("PMISS|"+o.channel)'):
+        require(retired in slave, f"{name}: legacy key not retired: {retired}", failures)
+
+    # A snapshot that comes back, and a schema that becomes readable again,
+    # both close their CRITICO.
+    for recovered in ('ResolveAlert("SCHEMA|"+o.channel', 'ResolveAlert("STALE|"+o.channel'):
+        require(recovered in slave, f"{name}: recovery is silent: {recovered}", failures)
 
 
 def check_tunables(source: dict[str, str], failures: list[str]) -> None:
@@ -558,6 +603,7 @@ def check_context(failures: list[str]) -> None:
         "robustness.md",
         "terminal_watchdog.md",
         "mt4_port.md",
+        "alert_lifecycle.md",
     ):
         require(note in index, f"ai_context index missing {note}", failures)
         require((ROOT / "ai_context" / note).is_file(), f"missing ai_context/{note}", failures)
@@ -598,6 +644,7 @@ def main() -> int:
         ("g_trade.PositionOpen(", "g_trade.PositionClose("),
         failures,
     )
+    check_alert_lifecycle("slave", source["slave"], failures)
     check_tunables(source, failures)
 
     check_mt4_protocol(mt4["master"], mt4["slave"], failures)
@@ -611,6 +658,7 @@ def main() -> int:
         ("OrderClose(",),
         failures,
     )
+    check_alert_lifecycle("slave mt4", mt4["slave"], failures)
     check_tunables(mt4, failures)
 
     # The channel rule is shared by every EA that names the snapshot file,

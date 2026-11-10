@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT4_v1_00_MULTI.mq4                            |
+//| CopyMonitor_Slave_MT4_v1_01_MULTI.mq4                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
 //| Pending orders: normally ignored as copy expectations; optional   |
 //| confirmed EXTRA pending in Slave can be deleted.                  |
-//| Port MT4 del Slave MT5 v1.20 MULTI: mismo snapshot, mismas reglas |
+//| Port MT4 del Slave MT5 v1.21 MULTI: mismo snapshot, mismas reglas |
 //| de emparejamiento y los mismos limites de automatizacion.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.00"
-#property description "CopyMonitor Slave MT4 v1.00 MULTI"
+#property version "1.01"
+#property description "CopyMonitor Slave MT4 v1.01 MULTI"
 
 // MT4 no tiene CTrade ni MqlTradeRequest: las correcciones se envian con
 // OrderSend, OrderModify y OrderDelete, y el diagnostico sale de GetLastError.
@@ -368,6 +368,14 @@ string AlertHeader(const Snap &snap,const string level)
           "BROKER MASTER: "+BrokerText(snap.broker)+"\n"+
           "ID SLAVE: "+AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\n"+
           "BROKER SLAVE: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY));
+}
+// Pie comun de los avisos de posiciones: el Slave nunca abre ni cierra una
+// posicion, asi que todos piden la misma revision manual.
+string PositionReviewAction()
+{
+   return "\n\nACCIÓN:\nRevisar la cuenta Slave "+
+          AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+"."+
+          "\nCopyMonitor no abre ni cierra posiciones automáticamente.";
 }
 string PositionTypeText(const int type)
 {
@@ -956,6 +964,17 @@ void ClearAlert(const string k)
    if(i<0) return;
    if(g_alerts[i].active) g_alerts_dirty=true;
    g_alerts[i].active=false;
+}
+// Retira sin aviso toda una familia de claves. Solo para cuando el usuario
+// desactiva una vigilancia: sin comparacion no puede llegar ningun RESUELTO.
+void ClearAlertsWithPrefix(const string prefix)
+{
+   for(int i=0;i<ArraySize(g_alerts);i++)
+   {
+      if(!g_alerts[i].active || StringFind(g_alerts[i].key,prefix)!=0) continue;
+      g_alerts[i].active=false;
+      g_alerts_dirty=true;
+   }
 }
 // Un aviso de espera no se repite: hasta que el mercado abra no hay nada nuevo
 // que contar y el recordatorio solo generaria ruido.
@@ -1936,9 +1955,6 @@ void CheckOpen(const Owner &o,const Snap &snap)
    ArrayResize(assign,ArraySize(snap.pos));
    ArrayInitialize(assign,-1);
 
-   bool problems=false;
-   string details="";
-
    // 1) Resolver primero la ambiguedad: cuando varias copias libres encajan
    //    con la misma posicion Master, la suya es la que ya lleva su SL y su
    //    TP. Atarlas antes que nada evita corregir la posicion equivocada
@@ -1982,7 +1998,13 @@ void CheckOpen(const Owner &o,const Snap &snap)
       int i=order[k];
 
       if(MasterTicketIgnored(o.channel,snap.pos[i].ticket))
+      {
+         // El usuario dejó de vigilar este ticket: ningún RESUELTO sería
+         // cierto, así que los avisos se retiran en silencio.
+         ClearAlert("POSMISS|"+o.channel+"|"+TicketText(snap.pos[i].ticket));
+         ClearAlert("POSAMB|"+o.channel+"|"+TicketText(snap.pos[i].ticket));
          continue;
+      }
 
       int best=assign[i];
       int tied=0;
@@ -1990,17 +2012,31 @@ void CheckOpen(const Owner &o,const Snap &snap)
       if(best<0)
          best=MatchPosByPrice(o,snap.pos[i],sp,su,tied);
 
+      // Cada problema de una posición Master lleva su propia clave de aviso.
+      // Con una sola clave agrupada por canal el RESUELTO sólo podía salir
+      // cuando desaparecían todos los problemas a la vez, así que la copia
+      // que llegaba tarde se avisaba y su RESUELTO no se enviaba nunca.
+      string pos_suffix=o.channel+"|"+TicketText(snap.pos[i].ticket);
+      string miss_key="POSMISS|"+pos_suffix;
+      string amb_key="POSAMB|"+pos_suffix;
+      string master_line="Ticket Master: "+TicketText(snap.pos[i].ticket);
+
       if(tied>1)
       {
-         problems=true;
-         string ambiguity=
+         PersistAlert(amb_key,
+            AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nNo se puede enlazar de forma fiable una posición Master con su copia Slave.\n\n"+
             "Estado: POSICIÓN ACTIVA\n"+
             "Símbolo Master: "+snap.pos[i].symbol+"\n"+
-            "Ticket Master: "+TicketText(snap.pos[i].ticket)+"\n"+
+            master_line+"\n"+
             "Copias Slave igualmente compatibles: "+IntegerToString(tied)+
-            "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna corrección automática.";
-         details+=ambiguity;
+            "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna corrección automática.");
+         ResolveAlert(miss_key,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nYa existen copias compatibles de la posición activa en la cuenta Slave.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+            master_line);
          MarkPosPriceTies(o,snap.pos[i],sp,su,ambiguous_slave);
          continue;
       }
@@ -2009,23 +2045,51 @@ void CheckOpen(const Owner &o,const Snap &snap)
       {
          string slave_symbol=ExpectedSlaveSymbol(o.channel,snap.pos[i].symbol);
          double expected_volume=ExpectedSlaveVolume(slave_symbol,snap.pos[i].vol,o.mult);
-         problems=true;
-         details+=
+         PersistAlert(miss_key,
+            AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nFalta la copia de una posición activa.\n\n"+
             "Estado: POSICIÓN ACTIVA\n"+
             "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
             "Símbolo Master: "+snap.pos[i].symbol+"\n"+
             "Símbolo esperado Slave: "+slave_symbol+"\n"+
-            "Ticket Master: "+TicketText(snap.pos[i].ticket)+"\n\n"+
+            master_line+"\n\n"+
             "Volumen Master: "+VolumeText(slave_symbol,snap.pos[i].vol)+"\n"+
             "Volumen Slave esperado: "+VolumeText(slave_symbol,expected_volume)+"\n"+
             "Precio de entrada: "+PriceText(snap.pos[i].price)+"\n"+
             "Stop Loss: "+StopText(snap.pos[i].sl,"SIN SL")+"\n"+
-            "Take Profit: "+StopText(snap.pos[i].tp,"SIN TP");
+            "Take Profit: "+StopText(snap.pos[i].tp,"SIN TP")+
+            PositionReviewAction());
+         ResolveAlert(amb_key,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nLa posición Master ya no presenta un enlace ambiguo.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+            master_line);
          continue;
       }
 
       su[best]=true;
+
+      // La copia existe y es la única compatible: eso cierra tanto el aviso
+      // de copia faltante como el de enlace ambiguo.
+      ResolveAlert(miss_key,
+         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+         "\n\nPROBLEMA RESUELTO:\nLa copia de la posición activa ya existe en la cuenta Slave.\n\n"+
+         "Estado: POSICIÓN ACTIVA\n"+
+         "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
+         "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+         "Símbolo Slave: "+sp[best].symbol+"\n"+
+         master_line+"\n"+
+         "Ticket Slave: "+TicketText(sp[best].ticket)+"\n\n"+
+         "Volumen Slave: "+VolumeText(sp[best].symbol,sp[best].vol)+"\n"+
+         "Precio de entrada: "+PriceText(sp[best].price));
+      ResolveAlert(amb_key,
+         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+         "\n\nPROBLEMA RESUELTO:\nLa posición Master ya se enlaza con una única copia Slave.\n\n"+
+         "Estado: POSICIÓN ACTIVA\n"+
+         "Símbolo Master: "+snap.pos[i].symbol+"\n"+
+         master_line+"\n"+
+         "Ticket Slave: "+TicketText(sp[best].ticket));
 
       double tol=InpSLTPTolerancePoints*PointOf(sp[best].symbol);
 
@@ -2137,11 +2201,22 @@ void CheckOpen(const Owner &o,const Snap &snap)
    // Master-ticket copies.
    for(int j=0;j<ArraySize(sp);j++)
    {
-      if(su[j] || ambiguous_slave[j] || o.profile!=PROFILE_PORTFOLIO46)
-         continue;
+      string extra_key="POSEXTRA|"+o.channel+"|"+TicketText(sp[j].ticket);
 
-      problems=true;
-      details+=
+      if(su[j] || ambiguous_slave[j] || o.profile!=PROFILE_PORTFOLIO46)
+      {
+         ResolveAlert(extra_key,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nLa posición activa del Slave ya no sobra.\n\n"+
+            "Estado: POSICIÓN ACTIVA\n"+
+            "Tipo: "+PositionTypeText(sp[j].type)+"\n"+
+            "Símbolo: "+sp[j].symbol+"\n"+
+            "Ticket Slave: "+TicketText(sp[j].ticket));
+         continue;
+      }
+
+      PersistAlert(extra_key,
+         AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
          "\n\nPROBLEMA:\nExiste una posición activa extra en el Slave.\n\n"+
          "Estado: POSICIÓN ACTIVA\n"+
          "Tipo: "+PositionTypeText(sp[j].type)+"\n"+
@@ -2150,24 +2225,13 @@ void CheckOpen(const Owner &o,const Snap &snap)
          "Volumen Slave: "+VolumeText(sp[j].symbol,sp[j].vol)+"\n"+
          "Precio de entrada: "+PriceText(sp[j].price)+"\n"+
          "Stop Loss: "+StopText(sp[j].sl,"SIN SL")+"\n"+
-         "Take Profit: "+StopText(sp[j].tp,"SIN TP");
+         "Take Profit: "+StopText(sp[j].tp,"SIN TP")+
+         PositionReviewAction());
    }
 
-   string key="OPEN|"+o.channel;
-
-   if(problems)
-   {
-      string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+details;
-      msg+="\n\nACCIÓN:\nRevisar la cuenta Slave "+
-           AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".";
-      msg+="\nCopyMonitor no abre ni cierra posiciones automáticamente.";
-
-      PersistAlert(key,msg);
-   }
-   else
-   {
-      ClearAlert(key);
-   }
+   // Clave agrupada de las versiones anteriores a la v1.01: se retira en
+   // silencio para que un estado persistido no quede activo para siempre.
+   ClearAlert("OPEN|"+o.channel);
 }
 
 //---------------- pending extra cleanup ----------------
@@ -2490,6 +2554,13 @@ bool MasterOrderPresent(const Snap &snap,const long ticket)
          return true;
    return false;
 }
+bool MasterPositionPresent(const Snap &snap,const long ticket)
+{
+   for(int i=0;i<ArraySize(snap.pos);i++)
+      if(snap.pos[i].ticket==ticket)
+         return true;
+   return false;
+}
 void ResolveVanished(const string key,const Snap &snap,const string problem_text)
 {
    ResolveAlert(key,
@@ -2587,6 +2658,39 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
          UnblockCreate("CREATE|"+f[2]+"|"+f[3]);
          ClearMarketWait("CREATE|"+f[2]+"|"+f[3]);
          RemoveProblem("CREATE|"+f[2]+"|"+f[3]);
+         continue;
+      }
+
+      // POSMISS|canal|master y POSAMB|canal|master
+      if((f[0]=="POSMISS" || f[0]=="POSAMB") && n==3 && f[1]==o.channel)
+      {
+         long ticket=(long)StringToInteger(f[2]);
+         if(ticket>0 && MasterPositionPresent(snap,ticket)) continue;
+         ResolveVanished(key,snap,"La posición Master avisada ya no existe."+
+                                  "\nTicket Master: "+f[2]);
+         continue;
+      }
+
+      // POSEXTRA|canal|slave
+      if(f[0]=="POSEXTRA" && n==3 && f[1]==o.channel)
+      {
+         long ticket=(long)StringToInteger(f[2]);
+         if(ticket>0 && SelectLivePosition(ticket)) continue;
+         ResolveVanished(key,snap,"La posición activa extra del Slave ya no existe."+
+                                  "\nTicket Slave: "+f[2]);
+         continue;
+      }
+
+      // ORDMISS|canal|master
+      if(f[0]=="ORDMISS" && n==3 && f[1]==o.channel)
+      {
+         long ticket=(long)StringToInteger(f[2]);
+         if(ticket>0 && MasterOrderPresent(snap,ticket)) continue;
+         ResolveVanished(key,snap,"La orden pendiente del Master avisada ya no existe."+
+                                  "\nTicket Master: "+f[2]);
+         UnblockCreate("CREATE|"+f[1]+"|"+f[2]);
+         ClearMarketWait("CREATE|"+f[1]+"|"+f[2]);
+         RemoveProblem("CREATE|"+f[1]+"|"+f[2]);
          continue;
       }
    }
@@ -2864,39 +2968,47 @@ void CheckPending(const Owner &o,const Snap &snap)
    if(InpMonitorPendingOrders && InpExpectPendingCopies)
    {
       int missing_pending=0;
-      string missing_details="";
+
+      // Cada orden Master lleva su propia clave de aviso. El aviso agrupado
+      // por canal sólo podía resolverse cuando aparecían todas las copias a
+      // la vez, así que la que llegaba tarde se avisaba y no se resolvía.
       for(int m=0;m<ArraySize(snap.ord);m++)
       {
-         if(!master_matched[m])
+         string miss_key="ORDMISS|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
+
+         if(MasterTicketIgnored(o.channel,snap.ord[m].ticket))
          {
-            missing_pending++;
-            missing_details+=
-               "\n\nPROBLEMA:\nFalta la copia de una orden pendiente.\n\n"+
-               MasterPendingDetails(o,snap.ord[m]);
+            // El usuario dejó de vigilar este ticket: ningún RESUELTO sería
+            // cierto, así que el aviso se retira en silencio.
+            ClearAlert(miss_key);
+            continue;
          }
+
+         if(master_matched[m])
+         {
+            ResolveAlert(miss_key,
+               AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+               "\n\nPROBLEMA RESUELTO:\nLa copia de la orden pendiente ya existe en la cuenta Slave.\n\n"+
+               MasterPendingDetails(o,snap.ord[m]));
+            continue;
+         }
+
+         missing_pending++;
+
+         // Mientras se espera a que abra el mercado el recordatorio no aporta
+         // nada nuevo: el aviso BLOQUEADO ya dice que no hay nada que hacer.
+         if(MarketWaiting("CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket)))
+            KeepAlert(miss_key);
+         else
+            PersistAlert(miss_key,
+               AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
+               "\n\nPROBLEMA:\nFalta la copia de una orden pendiente.\n\n"+
+               MasterPendingDetails(o,snap.ord[m])+
+               "\n\nACCIÓN:\nEsperando que el problema persista antes de crear la orden automáticamente.");
       }
 
       if(missing_pending>0)
       {
-         string msg=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+missing_details;
-         msg+="\n\nACCIÓN:\nEsperando que el problema persista antes de crear la orden automáticamente.";
-
-         // Si toda copia pendiente está esperando a que abra el mercado, el
-         // recordatorio agrupado no aporta nada nuevo.
-         bool all_waiting=(missing_pending>0);
-         for(int m=0;m<ArraySize(snap.ord) && all_waiting;m++)
-            if(!master_matched[m] &&
-               !MarketWaiting("CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket)))
-               all_waiting=false;
-
-         if(all_waiting)
-            KeepAlert("PMISS|"+o.channel);
-         else
-            PersistAlert(
-               "PMISS|"+o.channel,
-               msg);
-
-         bool created_any=false;
          for(int m=0;m<ArraySize(snap.ord);m++)
          {
             if(master_matched[m]) continue;
@@ -2940,7 +3052,8 @@ void CheckPending(const Owner &o,const Snap &snap)
                ClearAlert("FAIL|"+create_key);
                ClearAlert("PBLOCK|"+create_key);
                ClearMarketWait(create_key);
-               created_any=true;
+               // El RESUELTO ya salió con el mensaje de la creación.
+               ClearAlert("ORDMISS|"+o.channel+"|"+TicketText(snap.ord[m].ticket));
             }
             else if(created==CM_CREATE_UNVERIFIED)
             {
@@ -2977,20 +3090,17 @@ void CheckPending(const Owner &o,const Snap &snap)
                   TradeFailureDetails());
             }
          }
+      }
 
-         // El aviso agrupado ya se resolvio con el mensaje de cada creacion.
-         if(created_any)
-            ClearAlert("PMISS|"+o.channel);
-      }
-      else
-      {
-         ResolveAlert("PMISS|"+o.channel,
-            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-            "\n\nPROBLEMA RESUELTO:\nLas órdenes pendientes esperadas ya aparecen en la cuenta Slave.");
-      }
+      // Clave agrupada de las versiones anteriores a la v1.01: se retira en
+      // silencio para que un estado persistido no quede activo para siempre.
+      ClearAlert("PMISS|"+o.channel);
    }
    else
    {
+      // Vigilancia desactivada: un aviso por ticket que siguiera activo no
+      // podría resolverse nunca, porque ya no hay comparación que lo cierre.
+      ClearAlertsWithPrefix("ORDMISS|"+o.channel+"|");
       ClearAlert("PMISS|"+o.channel);
    }
 
@@ -3135,7 +3245,12 @@ void ProcessOwner(const Owner &o,const Snap &s)
          "\nLa comparación y toda corrección automática están suspendidas.");
       return;
    }
-   ClearAlert("SCHEMA|"+o.channel);
+   // El encabezado puede quedarse sin ID Master si el snapshot sigue sin
+   // leerse: lo que importa es que el contrato roto deja de estarlo.
+   ResolveAlert("SCHEMA|"+o.channel,
+      AlertHeader(s,"🟢 COPYMONITOR — RESUELTO")+
+      "\n\nPROBLEMA RESUELTO:\nEl snapshot del Master vuelve a usar un esquema compatible de este canal."+
+      "\n\nACCIÓN:\nLa comparación y las correcciones automáticas se reanudan.");
 
    if(!s.valid || !s.fresh)
    {
@@ -3149,7 +3264,10 @@ void ProcessOwner(const Owner &o,const Snap &s)
       }
       return;
    }
-   ClearAlert("STALE|"+o.channel);
+   ResolveAlert("STALE|"+o.channel,
+      AlertHeader(s,"🟢 COPYMONITOR — RESUELTO")+
+      "\n\nPROBLEMA RESUELTO:\nVuelven a recibirse datos válidos y recientes de la cuenta Master."+
+      "\n\nACCIÓN:\nLa comparación y el borrado de pendientes se reanudan.");
 
    // La falta de permiso de trading no se avisa por si sola: queda en el panel
    // y se informa como BLOQUEADO sobre el problema concreto que no se pudo

@@ -23,7 +23,7 @@ versión. No cambiar una versión sólo por documentación externa al EA.
   indicar la carpeta `MQL5` que contiene `Include\Trade\Trade.mqh`:
 
   ```
-  metaeditor64.exe /compile:"<ruta>\CopyMonitor_Slave_MT5_v1_20_MULTI.mq5" ^
+  metaeditor64.exe /compile:"<ruta>\CopyMonitor_Slave_MT5_v1_21_MULTI.mq5" ^
                    /inc:"<terminal>\MQL5" /log:"<log>"
   ```
 

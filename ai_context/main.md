@@ -14,6 +14,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   dos posiciones o pendientes gemelas son indistinguibles en el snapshot.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
   identificadores de cuenta y datos operativos exigidos en cada aviso.
+- [alert_lifecycle.md](alert_lifecycle.md): una clave por problema, quién envía
+  el `RESUELTO` y cómo se cierran los avisos de un ticket que ya no existe.
 - [automatic_corrections.md](automatic_corrections.md): alcance autorizado,
   persistencia, revalidación y mensajes de resolución de los arreglos.
 - [robustness.md](robustness.md): publicación atómica, lectura reintentada,

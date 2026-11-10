@@ -53,6 +53,13 @@ Cada problema emite un `ALERTA` al detectarse y un único `RESUELTO` al cerrarse
 incluido el caso en que la operación avisada simplemente deja de existir. Una
 corrección automática fallida emite `CRÍTICO` con retcode y detalle.
 
+Esa garantía es por problema, no por canal: cada posición o pendiente avisada
+tiene su propia clave de aviso, así que una copia que llega tarde se cierra con
+su `RESUELTO` aunque otra operación del mismo canal siga mal. El precio es que
+varios problemas simultáneos producen varios mensajes en lugar de uno agrupado.
+También la recuperación del snapshot y la del esquema emiten `RESUELTO`. El
+detalle de las claves está en [alert_lifecycle.md](alert_lifecycle.md).
+
 ## Entrega
 
 El envío usa `POST`, así que el texto no depende del límite de longitud de una
