@@ -8,13 +8,13 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 ## Componentes
 
-- `CopyMonitor_Master_MT5_v1_16_MULTI.mq5`: publica posiciones abiertas,
+- `CopyMonitor_Master_MT5_v1_17_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_26_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_27_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
-- `CopyMonitor_Master_MT4_v1_02_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_06_MULTI.mq4`: los mismos dos EAs para MetaTrader
+- `CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y
+  `CopyMonitor_Slave_MT4_v1_07_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -66,15 +66,14 @@ vacío.
 `InpEnableTelegram` exige token y chat ID: activarlo sin credenciales dejaría al
 usuario sin ningún aviso y sin saberlo, así que el EA tampoco arranca.
 
-El snapshot va por el esquema `4`: el `2` añadió el bróker del Master, el `3` el
-precio stop-limit de las órdenes pendientes y el `4` el estado de conexión del
-terminal Master. **Master y Slave se despliegan juntos**, porque un Slave
-anterior rechaza el esquema `4` y suspendería la vigilancia. Al revés sí hay
-compatibilidad: un Master de esquema `1`, `2` o `3` se sigue leyendo, el aviso
-muestra `BROKER MASTER: NO DISPONIBLE`, la copia de una STOP LIMIT queda
-bloqueada por falta del precio límite y el enlace del Master aparece como `NO
-DISPONIBLE` en el panel. Un esquema que el Slave no entiende se avisa siempre
-como `CRÍTICO`.
+El snapshot va por el esquema `5`: el `2` añadió el bróker del Master, el `3` el
+precio stop-limit, el `4` el estado de conexión y el `5` una identidad nueva en
+cada ejecución del Master. Esa identidad hace que un reinicio normal sea
+detectable aunque la hora `written` siga avanzando. **Master y Slave se
+despliegan juntos**, porque un Slave anterior rechaza el esquema `5` y
+suspendería la vigilancia. El lector nuevo conserva los esquemas `1` a `4`
+para monitorización, pero no ejecuta correcciones automáticas sin la identidad
+de sesión del `5`. Un esquema desconocido se avisa siempre como `CRÍTICO`.
 
 ## Qué se vigila además de las operaciones
 
@@ -186,4 +185,8 @@ python -m tools.verify_project
 Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y los
 tres `.mq4` con el MetaEditor de MT4. Consulta `ai_context/main.md` para el
 contrato técnico completo.
+
+Los binarios versionados de la pareja actual se entregan separados por
+plataforma en `compiled/MT5` (`.ex5`) y `compiled/MT4` (`.ex4`). Los artefactos
+que MetaEditor deje junto a las fuentes siguen siendo locales e ignorados.
 

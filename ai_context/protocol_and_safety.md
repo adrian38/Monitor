@@ -6,7 +6,7 @@ Ruta lógica: `CopyMonitorMulti\CM_<channel>.txt` dentro de `FILE_COMMON`.
 
 Orden de registros:
 
-1. `META|version|written|channel|nick|account|open_total|pending_total|broker|connected`
+1. `META|version|written|channel|nick|account|open_total|pending_total|broker|connected|session`
 2. `POS|ticket|symbol|type|volume|open_price|sl|tp`, repetible
 3. `ORD|ticket|symbol|type|volume|open_price|sl|tp|stoplimit`, repetible
 4. `END`
@@ -15,32 +15,39 @@ El separador es `|`, los saltos son CRLF y los valores textuales se sanean
 antes de escribir. Cualquier evolución del esquema debe mantener compatibilidad
 o actualizar Master y Slave conjuntamente.
 
-El esquema vigente es el `4`:
+El esquema vigente es el `5`:
 
 - el `2` añadió al final del `META` el bróker del Master (`ACCOUNT_COMPANY`);
 - el `3` añade al final del registro `ORD` el precio stop-limit de la orden
   (`0` cuando el tipo no lo usa), que hacía falta para comparar y reproducir
   una copia de tipo STOP LIMIT;
 - el `4` añade al final del `META` el campo `connected`, que vale `1` cuando el
-  terminal Master mantiene la conexión con su servidor de trading.
+  terminal Master mantiene la conexión con su servidor de trading;
+- el `5` añade al final del `META` una identidad de sesión distinta en cada
+  `OnInit` del Master.
 
 `connected` existe porque era el único fallo indistinguible del funcionamiento
 normal. Un terminal Master desconectado conserva sus colecciones tal como
 estaban y el EA las sigue publicando cada segundo: el snapshot era fresco, su
 contenido era pasado, y el Slave no tenía forma de separar «todo cuadra» de
 «llevo cuarenta minutos ciego». Lo que el Slave no puede deducir tiene que
-viajar en el propio snapshot. Ver [robustness.md](robustness.md).
+viajar en el propio snapshot. La identidad de sesión resuelve el caso análogo
+del reinicio: `written` suele seguir creciendo después de reiniciar, así que no
+puede demostrar por sí solo que la fuente cambió. Ver
+[robustness.md](robustness.md).
 
-El lector acepta `1`, `2`, `3` y `4`, un único `META`, un `END`, el orden
+El lector acepta `1`, `2`, `3`, `4` y `5`, un único `META`, un `END`, el orden
 `META` → `POS*` → `ORD*` → `END` y recuentos declarados que coincidan
 exactamente con los registros. Rechaza tipos desconocidos, líneas fuera de
 orden y campos básicos imposibles. Con un
 Master de esquema `1` el bróker llega vacío y se muestra `NO DISPONIBLE`; con
 `1` o `2` el precio stop-limit llega como `0` y no se compara; con `1`, `2` o
 `3` el enlace del Master llega como desconocido, el panel lo dice y no se avisa
-de lo que no se sabe. Un `META` que declara esquema `4` sin sus diez campos se
-trata como lectura parcial, no como contrato distinto. Cualquier campo nuevo se
-añade al final para no romper al lector antiguo.
+de lo que no se sabe. Con esquemas `1` a `4` falta la identidad de sesión: el
+Slave puede monitorizar, pero no crea, modifica ni borra automáticamente. Un
+`META` de esquema `5` sin sus once campos se trata como lectura parcial, no
+como contrato distinto. Cualquier campo nuevo se añade al final para no romper
+al lector nuevo.
 
 Un snapshot parcial o incoherente queda inválido y suspende las comparaciones y
 el borrado de pendientes; se reintenta la lectura antes de darlo por perdido.
@@ -48,7 +55,7 @@ Un esquema que el Slave no entiende, o un fichero que declara otro canal, no es
 una incidencia transitoria sino el contrato roto: se avisa siempre como
 `CRÍTICO`, con independencia de `InpNotifySnapshotProblems`. Por eso un Master
 más nuevo nunca deja la vigilancia parada en silencio, pero **Master y Slave se
-despliegan juntos**: un Slave anterior rechaza el esquema `4`.
+despliegan juntos**: un Slave anterior rechaza el esquema `5`.
 
 Una ausencia de datos sostenida tampoco es silenciosa desde la v1.25:
 `InpNotifySnapshotProblems` gobierna sólo la falta transitoria, y pasados
@@ -77,10 +84,12 @@ Ver [robustness.md](robustness.md).
 - La tolerancia de volumen se expresa en pasos de volumen del símbolo Slave.
 - El emparejamiento no depende del orden de las colecciones del terminal: los
   dos lados se recorren por ticket ascendente sólo para que la evaluación sea
-  reproducible. Una pareja exige una candidata única; ningún empate se resuelve
-  por ticket u orden de apertura. Dos entradas gemelas intentan identificarse
-  antes por los valores que el Slave compara y, si siguen siendo ambiguas, se
-  avisa sin corregir. Ver [ambiguous_matching.md](ambiguous_matching.md).
+  reproducible. Una pareja debe ser única en ambos sentidos: el Master sólo
+  puede tener una candidata y esa Slave sólo puede identificar a una Master
+  libre. Ningún empate se resuelve por ticket u orden de apertura. Dos entradas
+  gemelas intentan identificarse antes por los valores que el Slave compara y,
+  si siguen siendo ambiguas, se avisa sin corregir. Ver
+  [ambiguous_matching.md](ambiguous_matching.md).
 - Precio de entrada, SL y TP se comparan sólo cuando sus opciones están activas.
   El precio stop-limit se compara cuando el Master lo publica.
 - Los tickets Master configurados para ignorar no generan incidencias.
@@ -118,7 +127,10 @@ propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
 - El Master nunca abre, modifica ni cierra operaciones.
 - El Slave nunca abre, cierra ni cambia el volumen de posiciones abiertas.
 - El Slave puede modificar SL/TP de posiciones y crear o modificar pendientes
-  sólo después de que la discrepancia persista y se revalide.
+  sólo después de que la discrepancia persista y se revalide. Inmediatamente
+  antes de toda acción se vuelve a leer un snapshot fresco de esquema `5` y se
+  confirman la misma cuenta, sesión y valores Master. Crear reconcilia además
+  la cuenta Slave y borrar vuelve a demostrar que el Master sigue vacío.
 - Una pendiente sólo se borra si pertenece al owner evaluado, sigue siendo
   extra y permanece así durante el tiempo de confirmación, y además el
   snapshot del Master lleva `InpEmptyMasterConfirmSeconds` seguidos sin
@@ -139,6 +151,7 @@ propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
   avisa y se bloquea el reintento para no duplicar pendientes.
 - Un resultado de creación indeterminado (timeout, conexión perdida o error
   común) se reconcilia con las órdenes vivas. Si no aparece exactamente una
-  copia propia compatible, se bloquea el reintento para revisión manual.
+  copia propia compatible, se bloquea el reintento para revisión manual. El
+  bloqueo se persiste y sobrevive a reinicios; no caduca por tiempo.
 - No probar borrado, WebRequest de Telegram ni interacción con una cuenta real
   sin autorización explícita del usuario.

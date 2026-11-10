@@ -21,7 +21,12 @@ que falta, `InpExtraPendingConfirmSeconds` para borrar una extra y
 `InpAutoFixPersistSeconds` para las correcciones de valores. Crear una orden
 nueva no es lo mismo que ajustar lo que ya existe, así que la creación tiene su
 propio retardo desde la v1.22. Al cumplirse el plazo se releen las colecciones,
-se revalida ownership y se actúa sólo si el problema continúa.
+se revalida ownership y se actúa sólo si el problema continúa. Inmediatamente
+antes de cualquier modificación, creación o borrado se relee el snapshot
+actual y se exigen esquema 5, la misma cuenta y sesión, enlace sano y ventana
+de recuperación. Crear reconcilia además otra vez las pendientes Slave y borrar
+demuestra de nuevo que el Master continúa vacío. Así se cierra la carrera en la
+que Copyix o el Master cambian durante las comprobaciones del mismo ciclo.
 
 Si Copyix resuelve durante la espera, se cancela el candidato y se envía
 `RESUELTO`. Si CopyMonitor actúa, verifica el estado posterior y envía siempre
@@ -87,11 +92,15 @@ que el emparejamiento tenga éxito: reintentar duplicaría la pendiente en cada
 ventana. La comparación de valores de una pendiente emparejada depende de
 `InpMonitorPendingOrders`.
 
-Un timeout o una pérdida de conexión tras `OrderSend` no demuestra que el
-servidor no aceptara la orden. En ese caso se busca una única pendiente viva,
-propia y compatible; si aparece se adopta como éxito, y si el resultado sigue
-siendo incierto se bloquea el ticket Master. Nunca se reenvía automáticamente
-una creación cuyo resultado pudo llegar al servidor.
+Un timeout, una pérdida de conexión o un resultado desconocido tras
+`OrderSend` no demuestra que el servidor no aceptara la orden. En ese caso se
+busca una única pendiente viva, propia y compatible; si aparece se adopta como
+éxito, y si el resultado sigue siendo incierto se bloquea el ticket Master.
+Ese bloqueo se guarda en `CM_CREATEBLOCKS_<InpSlaveID>.txt`, incluso si la
+persistencia opcional de avisos está desactivada; sobrevive a reinicios y no
+caduca sólo por tiempo. Desaparece cuando el matching demuestra la copia o
+cuando el ticket Master ya no existe. Nunca se reenvía automáticamente una
+creación cuyo resultado pudo llegar al servidor.
 
 ## Errores habituales del servidor
 
@@ -115,10 +124,11 @@ Una comprobación previa no elimina la carrera entre comprobar y enviar: el
 servidor sigue siendo la autoridad final. Por eso la verificación posterior y
 el tratamiento especial del resultado indeterminado son parte del contrato.
 
-El estado interno —ventanas de persistencia, avisos cerrados y bloqueos de
-creación— caduca tras una hora sin usarse, para que una sesión larga no acumule
-claves de tickets antiguos. Un aviso cuyo ticket ya no existe se cierra con
-`RESUELTO` en lugar de quedarse activo para siempre.
+Las ventanas transitorias de persistencia caducan tras una hora sin usarse para
+que una sesión larga no acumule tickets antiguos. Los bloqueos de creación
+incierta no caducan: hacerlo permitiría duplicar una orden después de una hora
+o de un reinicio. Un aviso cuyo ticket ya no existe se cierra con `RESUELTO` en
+lugar de quedarse activo para siempre.
 
 Los controles son `InpMissingPendingConfirmSeconds` para el retardo de creación,
 `InpAutoFixPositionSLTP` para SL/TP de posiciones activas,

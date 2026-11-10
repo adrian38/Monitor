@@ -9,14 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT5_v1_16_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_26_MULTI.mq5",
+    "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_27_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT4_v1_02_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_06_MULTI.mq4",
+    "master": ROOT / "CopyMonitor_Master_MT4_v1_03_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_07_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -79,8 +79,8 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
         require(token in master, f"master: protocol token missing: {token}", failures)
 
     require(
-        "#define CM_SNAPSHOT_SCHEMA   4" in master,
-        "master: published schema must be 4",
+        "#define CM_SNAPSHOT_SCHEMA   5" in master,
+        "master: published schema must be 5",
         failures,
     )
     require(
@@ -108,6 +108,11 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
         "master: schema 4 must publish the terminal link state",
         failures,
     )
+    require(
+        "g_session_id=NewSessionId();" in master and "g_session_id+\"\\r\\n\"" in master,
+        "master: schema 5 must publish a per-run session id",
+        failures,
+    )
 
     for token in ('p[0]=="META"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
         require(token in slave, f"slave: protocol reader missing: {token}", failures)
@@ -117,6 +122,7 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
         'if(token=="2") return 2;',
         'if(token=="3") return 3;',
         'if(token=="4") return 4;',
+        'if(token=="5") return 5;',
     ):
         require(token in slave, f"slave: schema reader missing: {token}", failures)
     require(
@@ -404,6 +410,22 @@ BLIND_SPOT_TOKENS = (
     # An uncertain create result must never be retried blindly.
     "CM_CREATE_UNCERTAIN",
     "FindUniqueOwnedPending(",
+    "LoadCreateBlocks(",
+    "SaveCreateBlocks(",
+    "g_instance_lock_owned && g_instance_state_loaded",
+    # Matching must be unique from both Master and Slave perspectives.
+    "PosSlaveIdentifiesMaster(",
+    "OrdSlaveIdentifiesMaster(",
+    "MarkPosVolumeTies(",
+    "MarkOrdVolumeTies(",
+    # Every automatic action revalidates the current snapshot/state.
+    "ReadTrustedSnapshotNow(",
+    'if(latest.session=="")',
+    "CurrentMasterPosition(",
+    "SameMasterPositionValues(",
+    "SameMasterOrderValues(",
+    "MasterStillEmptyBeforeDelete(",
+    "CM_CREATE_PRESENT",
     # The snapshot reader rejects malformed or out-of-order records.
     "bool meta=false,en=false,malformed=false;",
     "int phase=0;",
@@ -549,8 +571,8 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
         require(token in master, f"master mt4: protocol token missing: {token}", failures)
 
     require(
-        "#define CM_SNAPSHOT_SCHEMA   4" in master,
-        "master mt4: published schema must be 4",
+        "#define CM_SNAPSHOT_SCHEMA   5" in master,
+        "master mt4: published schema must be 5",
         failures,
     )
     require(
@@ -576,6 +598,11 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
         "master mt4: schema 4 must publish the terminal link state",
         failures,
     )
+    require(
+        "g_session_id=NewSessionId();" in master and "g_session_id+\"\\r\\n\"" in master,
+        "master mt4: schema 5 must publish a per-run session id",
+        failures,
+    )
 
     for token in ('p[0]=="META"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
         require(token in slave, f"slave mt4: protocol reader missing: {token}", failures)
@@ -585,6 +612,7 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
         'if(token=="2") return 2;',
         'if(token=="3") return 3;',
         'if(token=="4") return 4;',
+        'if(token=="5") return 5;',
     ):
         require(token in slave, f"slave mt4: schema reader missing: {token}", failures)
     require(
@@ -617,6 +645,12 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
             failures,
         )
     require("OrderClose(" not in slave, "slave mt4: automatic position close detected", failures)
+    require(
+        "code==CM_ERR_NO_RESULT" in slave
+        and "code==CM_ERR_NO_CONNECTION" in slave,
+        "slave mt4: uncertain create results must include no-result and connection loss",
+        failures,
+    )
 
 
 def check_master_channel_lock(name: str, master: str, failures: list[str]) -> None:

@@ -1,7 +1,7 @@
 # Port MT4 de Master y Slave
 
-`CopyMonitor_Master_MT4_v1_02_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_06_MULTI.mq4`
-son la traducción a MQL4 del Master MT5 v1.16 y del Slave MT5 v1.26. Conservan
+`CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_07_MULTI.mq4`
+son la traducción a MQL4 del Master MT5 v1.17 y del Slave MT5 v1.27. Conservan
 el esquema de snapshot, el emparejamiento, los mensajes de Telegram y los
 límites de automatización. Lo que cambia es la API del terminal, no el
 contrato. Las decisiones de protocolo siguen en
@@ -10,7 +10,7 @@ contrato. Las decisiones de protocolo siguen en
 
 ## Interoperabilidad
 
-El snapshot es el mismo fichero, el mismo esquema `4` y los mismos códigos de
+El snapshot es el mismo fichero, el mismo esquema `5` y los mismos códigos de
 tipo, así que las cuatro combinaciones funcionan: Master MT4 con Slave MT5,
 Master MT5 con Slave MT4 y los dos pares homogéneos. Eso es posible porque los
 códigos de MT4 y MT5 coinciden en todo lo que el Master publica:
@@ -32,8 +32,8 @@ Los tickets del snapshot viajan como `long` en las estructuras del Slave MT4,
 porque un ticket de MT5 no cabe en el `int` de `OrderTicket()`. Se escriben con
 `IntegerToString`, no con `StringFormat("%I64u")`, que MT4 no trata igual.
 
-La pareja MT4 implementa también todo lo que la v1.25 del Slave MT5 añadió:
-esquema 4 con el estado de conexión del Master, aviso obligatorio de la
+La pareja MT4 implementa también todo lo que el Slave MT5 añadió:
+estado de conexión e identidad de sesión del Master, aviso obligatorio de la
 ausencia sostenida, vigilancia del propio terminal, cuenta Master esperada,
 avisos de volumen distinto, confirmación del Master vacío antes de borrar,
 cortacircuitos de acciones automáticas, guarda de escala de precios, nivel de
@@ -110,7 +110,7 @@ Para compilar, el MetaEditor de MT4 acepta un fuente fuera del directorio de
 datos y no hace falta `/inc` porque ninguno de los dos usa includes:
 
 ```
-metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_06_MULTI.mq4" /log:"<log>"
+metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_07_MULTI.mq4" /log:"<log>"
 ```
 
 El código de salida no distingue el éxito: hay que leer la línea `Result:` del

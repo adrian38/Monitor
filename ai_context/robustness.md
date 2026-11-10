@@ -37,6 +37,13 @@ enlace Slave como cada canal Master deben permanecer sanos durante
 snapshot ausente, parcial, obsoleto, cruzado, de otra cuenta o desconectado
 reinicia esa confianza y también la confirmación continua de Master vacío.
 
+La v1.27/v1.07 añade la identidad de sesión del esquema 5. Comparar sólo
+`written` detectaba un salto de reloj hacia atrás, pero no un reinicio normal:
+la hora seguía creciendo y la confirmación previa podía sobrevivir al nuevo
+Master. Cada `OnInit` publica un ID nuevo; el cambio invalida la confianza y la
+confirmación de vacío. Los esquemas anteriores se siguen leyendo para
+monitorización, pero no autorizan ninguna acción automática.
+
 En los tres casos se suspende en lugar de seguir comparando: actuar sobre datos
 que se sabe congelados es peor que no actuar, y el usuario recibe el aviso.
 
@@ -151,7 +158,10 @@ Desde la v1.25 el arranque se detiene además en cuatro casos nuevos:
   `CM_ALERTS_<id>.txt` y se lo pisan: el que escribe último borra los avisos
   activos del otro, y con ellos sus `RESUELTO`. El testigo es una variable
   global del terminal que se refresca cada ciclo y se suelta en `OnDeinit`; uno
-  que nadie refresca es de una instancia que ya no existe.
+  que nadie refresca es de una instancia que ya no existe. Además, `OnDeinit`
+  sólo guarda avisos, cola y bloqueos si esa instancia llegó a adquirir el lock
+  y cargar su estado: un `OnInit` rechazado nunca puede sobrescribir con arrays
+  vacíos los ficheros del dueño legítimo.
 - **Comentario propietario demasiado largo** (más de 31 caracteres). El port
   MT4 ya lo comprobaba; el MT5 dejaba crear copias que nunca volvían a
   reconocerse como propias.
@@ -206,6 +216,25 @@ Si el envío de una pendiente devuelve timeout, pérdida de conexión o error
 común, el resultado es indeterminado: antes de decidir se busca una única orden
 propia compatible. Si no puede demostrarse éxito o fracaso, el ticket Master
 queda bloqueado para revisión manual; reintentar a ciegas podría duplicarlo.
+Los bloqueos se escriben atómicamente en
+`CM_CREATEBLOCKS_<InpSlaveID>.txt`, aunque `InpPersistAlertState` esté
+desactivado; no caducan por el TTL general y sobreviven a recompilaciones,
+recargas y reinicios. Sólo se retiran cuando el matching ya demuestra una copia
+compatible o el ticket Master desaparece.
+
+La misma versión cierra la carrera entre comprobar y actuar. Justo antes de
+modificar se confirma que la posición u orden Master no cambió; antes de crear
+se hace lo mismo y se busca otra vez una copia propia compatible; antes de
+borrar se demuestra de nuevo que el Master sigue vacío. Todas las rutas exigen
+snapshot de esquema 5, misma cuenta y sesión, enlace sano y ventana de
+recuperación. Si algo cambia, se bloquea esa acción y el ciclo siguiente
+reconstruye el diagnóstico.
+
+El matching también es bidireccional. Una Master con una sola candidata no se
+asigna si esa Slave puede explicar otra Master libre; esta regla se aplica al
+desempate por valores, al matching principal y a la pasada que ignora volumen.
+En pendientes, la ambigüedad protege la candidata frente al borrado y evita
+crear otra orden.
 
 ## Avisos
 

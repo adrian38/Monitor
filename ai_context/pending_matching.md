@@ -9,11 +9,13 @@ para el precio límite de una STOP LIMIT, que sólo se compara cuando el Master 
 publica (esquema 3).
 
 Los dos lados se recorren por ticket ascendente para que la evaluación sea
-reproducible, pero el ticket no desempata. Antes de nada se intenta resolver la
-ambigüedad por datos: cuando una pendiente Master admite dos o más copias libres
-compatibles, sólo se ata una si es la única que coincide en todos los valores
-comparados. Si varias candidatas siguen empatadas, se avisa, no se modifica
-ninguna, no se crea otra copia y ninguna candidata se trata como extra borrable.
+reproducible, pero el ticket no desempata. La unicidad se comprueba en los dos
+sentidos: una copia tampoco se asigna si puede corresponder a dos Master libres.
+Antes de nada se intenta resolver la ambigüedad por datos: cuando una pendiente
+Master admite dos o más copias libres compatibles, sólo se ata una si es la
+única que coincide en todos los valores comparados. Si varias candidatas siguen
+empatadas, o una candidata no identifica una sola Master, se avisa, no se
+modifica ninguna, no se crea otra copia y ninguna candidata se trata como extra borrable.
 Ver [ambiguous_matching.md](ambiguous_matching.md).
 
 ## La copia con otro volumen
@@ -35,8 +37,9 @@ compatible **ignorando el volumen**. Si hay exactamente una:
 - **no** se corrigen sus valores: ajustar el precio de una orden cuyo tamaño ya
   no es el pedido afianzaría una copia equivocada.
 
-Dos candidatas igual de buenas siguen sin aportar identidad y no se ata
-ninguna, como en el resto del emparejamiento.
+Dos candidatas igual de buenas, o una misma candidata válida para varias Master,
+siguen sin aportar identidad y no se ata ninguna, como en el resto del
+emparejamiento.
 
 Las pendientes asociadas a tickets Master ignorados se protegen después y se
 retiran de todas las comprobaciones posteriores. Luego se emparejan las
@@ -50,8 +53,10 @@ pendientes» la cumple también un Master recién reconfigurado —otro filtro d
 símbolos, otro comentario, otra cuenta con el mismo canal—, que publica un
 snapshot válido y fresco con cero pendientes; con la confirmación de dos
 segundos que había antes, el Slave borraba pendientes reales sin que nadie
-pudiera intervenir. Un salto hacia atrás de la marca `written` delata un Master
-que acaba de arrancar y reinicia esa cuenta atrás. Si existe cualquier pendiente Master,
+pudiera intervenir. El esquema 5 publica una identidad de sesión distinta en
+cada arranque; cualquier cambio reinicia esa cuenta atrás. La marca `written`
+sólo queda como compatibilidad de lectura para esquemas antiguos, que no pueden
+autorizar acciones automáticas. Si existe cualquier pendiente Master,
 incluidas las ignoradas, se emite `PAMB` y se bloquea el borrado: una diferencia
 de símbolo o configuración podría impedir el matching correcto. Cuando esa misma
 pendiente pasa a estar emparejada, o el Master se queda sin pendientes, el
@@ -89,6 +94,8 @@ para que `CheckPending` las consulte; por eso el orden de las dos llamadas en
 
 Antes del borrado se espera `InpExtraPendingConfirmSeconds`, se vuelve a
 seleccionar el ticket y se comprueban de nuevo tipo pendiente, filtro de símbolo
-y ownership por comentario. Las posiciones abiertas nunca se cierran ni se
-modifican desde este flujo: sólo se leen para reconocer una activación
-temprana.
+y ownership por comentario. Justo antes de enviar se relee el snapshot, se
+confirman esquema 5, cuenta, sesión, enlace y ventana de recuperación, y se
+demuestra otra vez que el Master continúa sin pendientes. Las posiciones
+abiertas nunca se cierran ni se modifican desde este flujo: sólo se leen para
+reconocer una activación temprana.

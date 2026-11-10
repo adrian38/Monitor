@@ -14,9 +14,13 @@ a la siguiente.
 ## Ningún enlace queda al azar
 
 El emparejamiento sólo acepta una pareja cuando los datos producen una única
-candidata. `CM_MATCH_EPS` absorbe exclusivamente ruido de coma flotante; si dos
-copias quedan dentro de ese margen, el ticket, el orden del array o el orden de
-apertura no pueden decidir la identidad.
+candidata **en ambos sentidos**. No basta con que una Master vea una sola
+Slave: esa Slave debe identificar también a una sola Master todavía libre. Si
+dos Master podrían reclamar la misma copia, asignarla a la primera por orden de
+recorrido convertiría a la segunda en una falsa faltante y, para pendientes,
+podría crear un duplicado. `CM_MATCH_EPS` absorbe exclusivamente ruido de coma
+flotante; el ticket, el orden del array o el orden de apertura no deciden la
+identidad.
 
 Las colecciones se recorren por ticket para que la evaluación y los avisos sean
 reproducibles, pero ese orden nunca desempata una pareja. Una ambigüedad
@@ -40,7 +44,7 @@ Iguales para posiciones y para pendientes:
    se empareja por cercanía de precio y se retira de las comprobaciones.
 3. **Monitorización del resto.** Cada entrada Master usa la pareja que traiga
    de la fase 1 y, si no tiene, una copia libre sólo cuando es la única más
-   cercana en precio.
+   cercana en precio y la copia no encaja a la vez con otra Master libre.
 
 Una sola candidata compatible nunca entra en la fase 1: sin ambigüedad el
 precio ya decide y el desempate no debe alterar ese resultado.
@@ -53,15 +57,17 @@ precio ya decide y el desempate no debe alterar ese resultado.
    reclamar la copia de 0.20 que pertenece a una Master de 0.20 todavía sin
    evaluar, sólo por tener el ticket más bajo. Aplazarla garantiza que una
    copia con otro volumen se asigna únicamente cuando ya no la encaja
-   exactamente nadie más. Sigue exigiéndose candidata única.
+   exactamente nadie más. Sigue exigiéndose candidata única desde los dos
+   lados; si varias Master pueden explicar la misma copia de volumen distinto,
+   todas quedan protegidas y se avisa de ambigüedad sin crear ni modificar.
 
 ## Cuando no hay nada que distinga
 
-Si varias copias empatan en la distancia mínima, no se enlaza ninguna. Se envía
-una `ALERTA` que pide revisión manual y se bloquean las modificaciones de las
-candidatas. En pendientes, el Master se considera cubierto sólo a efectos de no
-crear un duplicado, y las candidatas no se consideran extras borrables. Ver
-[telegram_messages.md](telegram_messages.md).
+Si varias copias empatan para una Master, o una copia encaja con varias Master,
+no se enlaza ninguna. Se envía una `ALERTA` que pide revisión manual y se
+bloquean las modificaciones de las candidatas. En pendientes, el Master se
+considera cubierto sólo a efectos de no crear un duplicado, y las candidatas no
+se consideran extras borrables. Ver [telegram_messages.md](telegram_messages.md).
 
 ## Límites conocidos
 

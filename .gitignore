@@ -3,6 +3,13 @@
 *.ex4
 *.log
 
+# Release binaries explicitly kept under versioned delivery folders.
+!compiled/
+!compiled/MT4/
+!compiled/MT4/*.ex4
+!compiled/MT5/
+!compiled/MT5/*.ex5
+
 # Local/editor state
 .idea/
 .vscode/

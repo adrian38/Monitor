@@ -23,13 +23,16 @@ versión. No cambiar una versión sólo por documentación externa al EA.
   indicar la carpeta `MQL5` que contiene `Include\Trade\Trade.mqh`:
 
   ```
-  metaeditor64.exe /compile:"<ruta>\CopyMonitor_Slave_MT5_v1_26_MULTI.mq5" ^
+  metaeditor64.exe /compile:"<ruta>\CopyMonitor_Slave_MT5_v1_27_MULTI.mq5" ^
                    /inc:"<terminal>\MQL5" /log:"<log>"
   ```
 
   El código de salida de MetaEditor no distingue el éxito: hay que leer la
   línea `Result:` del log, que está en UTF-16.
 - La compilación no autoriza a adjuntar EAs, lanzar terminales ni tocar cuentas.
+- Tras una compilación de entrega, copiar sólo los binarios de la versión
+  vigente a `compiled/MT5` y `compiled/MT4`. Los ejecutables generados junto a
+  las fuentes no se versionan.
 - Para cambios de snapshot, verificar escritor y lector sobre el mismo esquema.
 - Informar compilaciones o pruebas omitidas y por qué.
 

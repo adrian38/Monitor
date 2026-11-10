@@ -1,17 +1,14 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Master_MT4_v1_02_MULTI.mq4                           |
+//| CopyMonitor_Master_MT5_v1_17_MULTI.mq5                           |
 //| Publishes open positions + pending orders for CopyMonitor Slave. |
 //| No trading actions.                                               |
-//| Port MT4 del Master MT5 v1.15 MULTI: mismo esquema, mismo        |
-//| directorio comun y mismos codigos de tipo, de modo que un Master |
-//| MT4 puede alimentar a un Slave MT4 o MT5 indistintamente.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.02"
-#property description "CopyMonitor Master MT4 v1.02 MULTI"
+#property version   "1.17"
+#property description "CopyMonitor Master MT5 v1.17 MULTI"
 
-// Esquema de snapshot publicado. El lector Slave acepta 1, 2, 3 y 4.
-//   META|4|written|channel|nick|account|open_total|pending_total|broker|connected
+// Esquema de snapshot publicado. El lector Slave acepta 1, 2, 3, 4 y 5.
+//   META|5|written|channel|nick|account|open_total|pending_total|broker|connected|session
 //   POS|ticket|symbol|type|volume|open_price|sl|tp
 //   ORD|ticket|symbol|type|volume|open_price|sl|tp|stoplimit
 //   END
@@ -19,43 +16,35 @@
 // esquema 1 o 2 lo ignora porque los campos nuevos van siempre al final.
 //
 // El campo connected del META aparece en el esquema 4 y vale 1 cuando el
-// terminal Master mantiene la conexion con su servidor. Sin el, un Master
-// desconectado seguia publicando cada segundo la ultima foto conocida de sus
-// operaciones: el snapshot era fresco, el contenido era pasado, y no habia
-// forma de distinguir "todo cuadra" de "llevo cuarenta minutos ciego".
-#define CM_SNAPSHOT_SCHEMA   4
+// terminal Master mantiene la conexion con su servidor de trading. Sin el, un
+// Master desconectado seguia publicando cada segundo una foto perfecta de las
+// posiciones que habia cuando se corto el enlace: el snapshot era fresco, el
+// Slave lo daba por bueno y no habia forma de distinguir "todo cuadra" de
+// "llevo cuarenta minutos ciego". Es el unico fallo que se confunde con el
+// funcionamiento normal, asi que viaja en el propio snapshot.
+// El campo session aparece en el esquema 5 y cambia en cada OnInit. Permite al
+// Slave invalidar la confianza aunque written siga avanzando tras un reinicio.
+#define CM_SNAPSHOT_SCHEMA   5
 #define CM_CHANNEL_MAX_LEN   32
 
-// El campo type viaja como numero y lo interpreta un Slave que puede ser MT5.
-// Los codigos de MT4 y de MT5 coinciden en el rango que este Master publica:
-//   OP_BUY=0       ORDER_TYPE_BUY=0 / POSITION_TYPE_BUY=0
-//   OP_SELL=1      ORDER_TYPE_SELL=1 / POSITION_TYPE_SELL=1
-//   OP_BUYLIMIT=2  ORDER_TYPE_BUY_LIMIT=2
-//   OP_SELLLIMIT=3 ORDER_TYPE_SELL_LIMIT=3
-//   OP_BUYSTOP=4   ORDER_TYPE_BUY_STOP=4
-//   OP_SELLSTOP=5  ORDER_TYPE_SELL_STOP=5
-// Por eso el snapshot no traduce nada. MT4 no tiene STOP LIMIT (6 y 7), asi
-// que este Master nunca publica esos tipos y el campo stoplimit es siempre 0.
-
-//--- ===== MASTER IDENTITY =====
+input group "===== MASTER IDENTITY ====="
 input string InpAccountNick         = "MASTER_280";
 input string InpChannelID           = "MASTER_280";
 input int    InpPublishSeconds      = 1;
 input bool   InpShowPanel           = true;
 
-//--- ===== OPTIONAL MASTER FILTER =====
+input group "===== OPTIONAL MASTER FILTER ====="
 input string InpFilterComment       = "";   // empty = all
-// El numero magico de MT4 es un entero de 32 bits, no el long de MT5.
-input int    InpFilterMagic         = -1;   // -1 = all
+input long   InpFilterMagic         = -1;   // -1 = all
 input string InpSymbolsFilter       = "";   // empty = all; comma/semicolon separated
 input string InpSymbolsIgnore       = "";   // symbols to exclude; comma/semicolon separated
 
-//--- ===== TIMERS =====
+input group "===== TIMERS ====="
 // Segundos entre avisos de fallo de publicacion en el log. Un fallo continuo no
 // debe inundar el diario; el panel lo muestra siempre.
 input int    InpPublishFailLogSeconds = 10;
 
-//--- ===== DIAGNOSTIC =====
+input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog          = false;
 
 bool     g_busy=false;
@@ -65,10 +54,6 @@ string   g_include_symbols[];
 string   g_exclude_symbols[];
 string   g_snapshot_path="";
 string   g_snapshot_temp="";
-// Cuerpo (registros POS y ORD) de la ultima publicacion correcta. MT4 no tiene
-// OnTradeTransaction, asi que el disparo inmediato por cambio vive en OnTick y
-// necesita saber si el estado publicado sigue siendo el mismo.
-string   g_last_body="";
 // Estado del ultimo intento de publicacion, mostrado en el panel.
 bool     g_last_ok=false;
 datetime g_last_ok_time=0;
@@ -76,9 +61,13 @@ int      g_last_open=0;
 int      g_last_pending=0;
 string   g_last_error="";
 datetime g_last_log=0;
-// Handle exclusivo en FILE_COMMON: impide dos publicadores del mismo canal
-// incluso cuando viven en terminales MT4/MT5 distintos de la misma maquina.
+// El handle se mantiene abierto toda la vida del EA, sin flags SHARE. Como el
+// fichero esta en FILE_COMMON, tambien excluye Masters de otros terminales
+// MT4/MT5 de la misma maquina que intenten publicar el mismo canal.
 int      g_channel_lock=INVALID_HANDLE;
+// Identifica esta ejecucion concreta del Master. A diferencia de written,
+// cambia al reiniciar aunque el reloj local siga avanzando normalmente.
+string   g_session_id="";
 
 //---------------- utility ----------------
 string Trim(string s)
@@ -119,13 +108,6 @@ bool ChannelIdValid(const string id)
    return true;
 }
 
-// MT4 no admite %I64u en StringFormat de forma fiable: los tickets se escriben
-// con IntegerToString, que ya acepta un long.
-string TicketText(const long ticket)
-{
-   return IntegerToString(ticket);
-}
-
 void SplitClean(string raw,const ushort sep,string &out[])
 {
    ArrayResize(out,0);
@@ -146,7 +128,7 @@ void SplitClean(string raw,const ushort sep,string &out[])
 void LoadSymbolList(string raw,string &out[])
 {
    StringReplace(raw,";",",");
-   SplitClean(raw,(ushort)',',out);
+   SplitClean(raw,',',out);
 }
 
 bool SymbolListContains(const string &list[],const string symbol)
@@ -168,7 +150,7 @@ bool SymbolAllowed(const string symbol)
    return SymbolListContains(g_include_symbols,symbol);
 }
 
-bool PassFilter(const string symbol,const string c,const int m)
+bool PassFilter(const string symbol,const string c,const long m)
 {
    if(symbol=="") return false;
    if(!SymbolAllowed(symbol)) return false;
@@ -177,95 +159,30 @@ bool PassFilter(const string symbol,const string c,const int m)
    return true;
 }
 
-// MT4 guarda posiciones y pendientes en la misma lista de operaciones, asi que
-// el tipo es lo unico que las separa.
-bool IsPendingType(const int t)
+bool IsPending(const ENUM_ORDER_TYPE t)
 {
-   return t==OP_BUYLIMIT || t==OP_SELLLIMIT ||
-          t==OP_BUYSTOP  || t==OP_SELLSTOP;
+   return t==ORDER_TYPE_BUY_LIMIT || t==ORDER_TYPE_SELL_LIMIT ||
+          t==ORDER_TYPE_BUY_STOP  || t==ORDER_TYPE_SELL_STOP ||
+          t==ORDER_TYPE_BUY_STOP_LIMIT || t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 
-bool IsPositionType(const int t)
+bool IsStopLimit(const ENUM_ORDER_TYPE t)
 {
-   return t==OP_BUY || t==OP_SELL;
+   return t==ORDER_TYPE_BUY_STOP_LIMIT || t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 
-void AddRow(string &rows[],const string row)
-{
-   int n=ArraySize(rows);
-   ArrayResize(rows,n+1);
-   rows[n]=row;
-}
-
-//---------------- snapshot ----------------
-// Una sola pasada sobre la lista de operaciones: en MT4 posiciones y pendientes
-// comparten coleccion, y recorrerla dos veces podria mezclar dos fotos del
-// terminal. Se recorre hacia atras: si el terminal retira una entrada durante
-// el recorrido, los indices ya visitados no se desplazan.
-void CollectRows(string &pos_rows[],string &ord_rows[])
-{
-   ArrayResize(pos_rows,0);
-   ArrayResize(ord_rows,0);
-
-   for(int i=OrdersTotal()-1;i>=0;i--)
-   {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
-         continue;
-
-      int type=OrderType();
-      if(!IsPositionType(type) && !IsPendingType(type))
-         continue;
-
-      string symbol=OrderSymbol();
-
-      if(!PassFilter(symbol,OrderComment(),OrderMagicNumber()))
-         continue;
-
-      string row=
-         TicketText((long)OrderTicket())+"|"+
-         Safe(symbol)+"|"+
-         IntegerToString(type)+"|"+
-         DoubleToString(OrderLots(),8)+"|"+
-         DoubleToString(OrderOpenPrice(),10)+"|"+
-         DoubleToString(OrderStopLoss(),10)+"|"+
-         DoubleToString(OrderTakeProfit(),10);
-
-      if(IsPositionType(type))
-         AddRow(pos_rows,"POS|"+row+"\r\n");
-      else
-         // MT4 no tiene ordenes STOP LIMIT, asi que el precio limite del
-         // esquema 3 se publica siempre como 0 para mantener fijo el numero
-         // de campos del registro.
-         AddRow(ord_rows,"ORD|"+row+"|"+DoubleToString(0.0,10)+"\r\n");
-   }
-}
-
-// Los totales del META se derivan de los registros ya construidos. Contarlos
-// en una pasada aparte permitia publicar un META incoherente si la coleccion
-// cambiaba entre el recuento y la escritura, y el Slave invalidaba todo.
-string BuildBody(int &open_count,int &pending_count)
-{
-   string pos_rows[],ord_rows[];
-   CollectRows(pos_rows,ord_rows);
-
-   open_count=ArraySize(pos_rows);
-   pending_count=ArraySize(ord_rows);
-
-   string body="";
-   for(int i=0;i<open_count;i++)
-      body+=pos_rows[i];
-   for(int i=0;i<pending_count;i++)
-      body+=ord_rows[i];
-
-   return body;
-}
-
-// Conexion del terminal Master con su servidor. En MT4 la da IsConnected();
-// es el dato que el Slave no puede deducir, porque un terminal desconectado
-// conserva su lista de operaciones tal como estaba.
+// Conexion del terminal Master con su servidor de trading. Es el dato que el
+// Slave no puede deducir: un terminal desconectado conserva las colecciones
+// tal como estaban y las publica como si siguieran vivas.
 bool TerminalConnected()
 {
-   return IsConnected();
+   return TerminalInfoInteger(TERMINAL_CONNECTED)!=0;
+}
+
+string NewSessionId()
+{
+   return StringFormat("%I64d-%u-%I64d",
+                       (long)TimeLocal(),GetTickCount(),(long)ChartID());
 }
 
 bool ClaimChannelLock(const string channel)
@@ -291,18 +208,108 @@ void ReleaseChannelLock()
    g_channel_lock=INVALID_HANDLE;
 }
 
-string BuildSnapshot(const string body,const int open_count,const int pending_count)
+void AddRow(string &rows[],const string row)
 {
+   int n=ArraySize(rows);
+   ArrayResize(rows,n+1);
+   rows[n]=row;
+}
+
+//---------------- snapshot ----------------
+// Las colecciones se recorren hacia atras: si el terminal retira una entrada
+// mientras se construye el snapshot, los indices ya visitados no se desplazan.
+void CollectPositions(string &rows[])
+{
+   ArrayResize(rows,0);
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0)
+         continue;
+
+      string symbol=PositionGetString(POSITION_SYMBOL);
+      string comment=PositionGetString(POSITION_COMMENT);
+      long magic=(long)PositionGetInteger(POSITION_MAGIC);
+
+      if(!PassFilter(symbol,comment,magic))
+         continue;
+
+      AddRow(rows,
+         "POS|"+StringFormat("%I64u",tk)+"|"+
+         Safe(symbol)+"|"+
+         IntegerToString((int)PositionGetInteger(POSITION_TYPE))+"|"+
+         DoubleToString(PositionGetDouble(POSITION_VOLUME),8)+"|"+
+         DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),10)+"|"+
+         DoubleToString(PositionGetDouble(POSITION_SL),10)+"|"+
+         DoubleToString(PositionGetDouble(POSITION_TP),10)+"\r\n");
+   }
+}
+
+void CollectOrders(string &rows[])
+{
+   ArrayResize(rows,0);
+
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong tk=OrderGetTicket(i);
+      if(tk==0)
+         continue;
+
+      ENUM_ORDER_TYPE t=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(!IsPending(t))
+         continue;
+
+      string symbol=OrderGetString(ORDER_SYMBOL);
+      string comment=OrderGetString(ORDER_COMMENT);
+      long magic=(long)OrderGetInteger(ORDER_MAGIC);
+
+      if(!PassFilter(symbol,comment,magic))
+         continue;
+
+      // Solo las STOP LIMIT tienen precio limite propio; el resto publica 0
+      // para mantener fijo el numero de campos del registro.
+      double stoplimit=IsStopLimit(t) ? OrderGetDouble(ORDER_PRICE_STOPLIMIT) : 0.0;
+
+      AddRow(rows,
+         "ORD|"+StringFormat("%I64u",tk)+"|"+
+         Safe(symbol)+"|"+
+         IntegerToString((int)t)+"|"+
+         DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT),8)+"|"+
+         DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),10)+"|"+
+         DoubleToString(OrderGetDouble(ORDER_SL),10)+"|"+
+         DoubleToString(OrderGetDouble(ORDER_TP),10)+"|"+
+         DoubleToString(stoplimit,10)+"\r\n");
+   }
+}
+
+// Los totales del META se derivan de los registros ya construidos. Contarlos
+// en una pasada aparte permitia publicar un META incoherente si la coleccion
+// cambiaba entre el recuento y la escritura, y el Slave invalidaba todo.
+string BuildSnapshot(int &open_count,int &pending_count)
+{
+   string pos_rows[],ord_rows[];
+   CollectPositions(pos_rows);
+   CollectOrders(ord_rows);
+
+   open_count=ArraySize(pos_rows);
+   pending_count=ArraySize(ord_rows);
+
    string text=
       "META|"+IntegerToString(CM_SNAPSHOT_SCHEMA)+"|"+
-      IntegerToString((long)TimeLocal())+"|"+
+      StringFormat("%I64d",(long)TimeLocal())+"|"+
       Safe(InpChannelID)+"|"+Safe(InpAccountNick)+"|"+
-      IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+
+      StringFormat("%I64d",(long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+
       IntegerToString(open_count)+"|"+IntegerToString(pending_count)+"|"+
       Safe(AccountInfoString(ACCOUNT_COMPANY))+"|"+
-      IntegerToString(TerminalConnected() ? 1 : 0)+"\r\n";
+      IntegerToString(TerminalConnected() ? 1 : 0)+"|"+
+      g_session_id+"\r\n";
 
-   text+=body;
+   for(int i=0;i<open_count;i++)
+      text+=pos_rows[i];
+   for(int i=0;i<pending_count;i++)
+      text+=ord_rows[i];
+
    text+="END\r\n";
    return text;
 }
@@ -332,9 +339,10 @@ bool WriteWholeFile(const string path,const string text)
    return true;
 }
 
-bool Publish(const string body,const int open_count,const int pending_count)
+bool Publish()
 {
-   string text=BuildSnapshot(body,open_count,pending_count);
+   int open_count=0,pending_count=0;
+   string text=BuildSnapshot(open_count,pending_count);
 
    g_last_error="";
 
@@ -367,7 +375,6 @@ bool Publish(const string body,const int open_count,const int pending_count)
    if(ok)
    {
       g_last_ok_time=TimeLocal();
-      g_last_body=body;
       if(InpVerboseLog)
          PrintFormat("[CM MASTER] Snapshot publicado. open=%d pending=%d",
                      open_count,pending_count);
@@ -394,11 +401,11 @@ void Panel()
       return;
    }
 
-   string s="COPYMONITOR MASTER MT4 v1.02 MULTI\n";
+   string s="COPYMONITOR MASTER v1.17 MULTI\n";
    s+="Nick: "+InpAccountNick+"\nChannel: "+InpChannelID+"\n";
    s+="Broker: "+AccountInfoString(ACCOUNT_COMPANY)+"\n";
    s+="Snapshot schema: "+IntegerToString(CM_SNAPSHOT_SCHEMA)+"\n";
-   s+="Terminal: "+(TerminalConnected() ? "CONECTADO" : "SIN CONEXION")+"\n";
+   s+="Terminal: "+(TerminalConnected() ? "CONECTADO" : "SIN CONEXIÓN")+"\n";
    s+="Open: "+IntegerToString(g_last_open)+"\n";
    s+="Pending: "+IntegerToString(g_last_pending)+"\n";
    s+="Include symbols: "+(ArraySize(g_include_symbols)==0 ? "ALL" : InpSymbolsFilter)+"\n";
@@ -413,23 +420,26 @@ void Panel()
    Comment(s);
 }
 
-// force=true republica aunque nada haya cambiado, para refrescar la marca de
-// tiempo del META de la que depende la frescura en el Slave. force=false es el
-// disparo por tick: solo escribe si el estado publicado dejo de ser valido.
-void Cycle(const bool force)
+void Cycle()
 {
    if(g_busy)
       return;
    g_busy=true;
-
-   int open_count=0,pending_count=0;
-   string body=BuildBody(open_count,pending_count);
-
-   if(force || !g_last_ok || body!=g_last_body)
-      Publish(body,open_count,pending_count);
-
+   Publish();
    Panel();
    g_busy=false;
+}
+
+// Cada cierre genera varias transacciones y algunas no cambian el estado
+// publicado. Republicar solo en las relevantes evita reescrituras inutiles
+// del fichero comun sin perder latencia.
+bool TransactionMatters(const ENUM_TRADE_TRANSACTION_TYPE type)
+{
+   return type==TRADE_TRANSACTION_ORDER_ADD ||
+          type==TRADE_TRANSACTION_ORDER_UPDATE ||
+          type==TRADE_TRANSACTION_ORDER_DELETE ||
+          type==TRADE_TRANSACTION_DEAL_ADD ||
+          type==TRADE_TRANSACTION_POSITION;
 }
 
 int OnInit()
@@ -463,19 +473,16 @@ int OnInit()
 
    g_snapshot_path="CopyMonitorMulti\\CM_"+channel+".txt";
    g_snapshot_temp="CopyMonitorMulti\\CM_"+channel+".tmp";
-   g_last_body="";
-
-   // En MT4 conviene crear la carpeta del directorio comun antes de abrir el
-   // primer fichero: no todas las compilaciones la generan al vuelo.
-   FolderCreate("CopyMonitorMulti",FILE_COMMON);
 
    if(!ClaimChannelLock(channel))
       return INIT_PARAMETERS_INCORRECT;
 
+   g_session_id=NewSessionId();
+
    LoadSymbolList(InpSymbolsFilter,g_include_symbols);
    LoadSymbolList(InpSymbolsIgnore,g_exclude_symbols);
 
-   Cycle(true);
+   Cycle();
 
    if(!EventSetTimer(InpPublishSeconds))
    {
@@ -498,15 +505,13 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   Cycle(true);
+   Cycle();
 }
 
-// MT4 no tiene OnTradeTransaction. El equivalente es reaccionar al tick cuando
-// el estado que se publica dejo de coincidir con el ultimo snapshot: un cierre
-// o una pendiente nueva sale al instante sin reescribir el fichero comun en
-// cada tick de una cuenta sin cambios.
-void OnTick()
+void OnTradeTransaction(const MqlTradeTransaction &t,const MqlTradeRequest &r,const MqlTradeResult &x)
 {
-   Cycle(false);
+   if(!TransactionMatters(t.type))
+      return;
+   Cycle();
 }
 //+------------------------------------------------------------------+
