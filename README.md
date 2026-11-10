@@ -8,13 +8,13 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 ## Componentes
 
-- `CopyMonitor_Master_MT5_v1_15_MULTI.mq5`: publica posiciones abiertas,
+- `CopyMonitor_Master_MT5_v1_16_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_25_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_26_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
-- `CopyMonitor_Master_MT4_v1_01_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_05_MULTI.mq4`: los mismos dos EAs para MetaTrader
+- `CopyMonitor_Master_MT4_v1_02_MULTI.mq4` y
+  `CopyMonitor_Slave_MT4_v1_06_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -82,13 +82,13 @@ Un monitor que calla cuando se rompe no sirve de nada, así que el Slave avisa
 también de lo que le impide vigilar:
 
 - **El Master desconectado de su servidor.** Un terminal sin conexión sigue
-  publicando la última foto conocida, que es fresca y falsa a la vez. Tras
-  `InpMasterOfflineConfirmSeconds` sale un `CRÍTICO` y se suspenden la
-  comparación y las correcciones.
+  publicando la última foto conocida, que es fresca y falsa a la vez. La
+  comparación y las correcciones se suspenden inmediatamente; tras
+  `InpMasterOfflineConfirmSeconds` sale un `CRÍTICO`.
 - **La falta de datos sostenida.** `InpNotifySnapshotProblems` gobierna sólo el
   corte transitorio; pasados `InpStaleAlertSeconds` el aviso es obligatorio.
-- **El propio terminal Slave desconectado**, tras
-  `InpSlaveOfflineConfirmSeconds`.
+- **El propio terminal Slave desconectado.** La automatización se suspende al
+  primer ciclo sin enlace y el aviso espera `InpSlaveOfflineConfirmSeconds`.
 - **Una cuenta Master distinta de la esperada**, si rellenas
   `InpExpectedMasterAccounts`.
 - **Que el monitor sigue vivo.** `InpSendStartupNotice` confirma al arrancar
@@ -125,8 +125,14 @@ depende del perfil.
 - La cuenta Slave debe ser de cobertura. En compensación el emparejamiento una
   copia por posición no es válido y el EA no arranca salvo que insistas con
   `InpAllowNettingAccount`.
-- Dos instancias no pueden compartir `InpSlaveID`: se pisarían el fichero de
-  estado de avisos.
+- Dos instancias no pueden compartir `InpSlaveID`: un testigo atómico con token
+  y latido evita que se pisen estado y avisos. El ID sólo admite letras,
+  números, `_` y `-`.
+- Si hay cualquier corrección automática activa, cada canal exige comentario
+  propietario no vacío y cuenta Master esperada. Sin identidad inequívoca el
+  Slave puede monitorizar, pero no actuar.
+- Sólo puede haber un Master publicando un canal en la misma carpeta común. El
+  segundo no arranca mientras el primero conserve su bloqueo de canal.
 
 El identificador de canal admite de 1 a 32 caracteres de `A-Z a-z 0-9 _ - .`:
 Master y Slave derivan de él el mismo nombre de fichero y un carácter fuera de

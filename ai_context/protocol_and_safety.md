@@ -31,8 +31,10 @@ contenido era pasado, y el Slave no tenía forma de separar «todo cuadra» de
 «llevo cuarenta minutos ciego». Lo que el Slave no puede deducir tiene que
 viajar en el propio snapshot. Ver [robustness.md](robustness.md).
 
-El lector acepta `1`, `2`, `3` y `4`, un único `META`, un `END` y recuentos
-declarados que coincidan exactamente con los registros `POS` y `ORD`. Con un
+El lector acepta `1`, `2`, `3` y `4`, un único `META`, un `END`, el orden
+`META` → `POS*` → `ORD*` → `END` y recuentos declarados que coincidan
+exactamente con los registros. Rechaza tipos desconocidos, líneas fuera de
+orden y campos básicos imposibles. Con un
 Master de esquema `1` el bróker llega vacío y se muestra `NO DISPONIBLE`; con
 `1` o `2` el precio stop-limit llega como `0` y no se compara; con `1`, `2` o
 `3` el enlace del Master llega como desconocido, el panel lo dice y no se avisa
@@ -64,8 +66,12 @@ Ver [robustness.md](robustness.md).
 
 ## Matching y ownership
 
-- Single-master puede usar un comentario Slave vacío; multi-master exige un
+- Single-master puede usar un comentario Slave vacío sólo si todas las
+  correcciones automáticas están desactivadas; multi-master exige siempre un
   comentario propietario no vacío y único por canal.
+- Cualquier corrección automática exige además una cuenta Master esperada por
+  canal. Comentario y cuenta forman la frontera de propiedad antes de tocar el
+  Slave; en modo sólo monitor siguen siendo opcionales.
 - Las equivalencias de símbolo son específicas del canal y deben estar bien
   formadas: una entrada incompleta detiene el arranque en lugar de descartarse.
 - La tolerancia de volumen se expresa en pasos de volumen del símbolo Slave.
@@ -131,5 +137,8 @@ propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
 - Una copia sólo se crea sobre un símbolo permitido y disponible, y se verifica
   que la orden creada es visible como propia y emparejable. Si no lo es, se
   avisa y se bloquea el reintento para no duplicar pendientes.
+- Un resultado de creación indeterminado (timeout, conexión perdida o error
+  común) se reconcilia con las órdenes vivas. Si no aparece exactamente una
+  copia propia compatible, se bloquea el reintento para revisión manual.
 - No probar borrado, WebRequest de Telegram ni interacción con una cuenta real
   sin autorización explícita del usuario.

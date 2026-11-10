@@ -9,14 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT5_v1_15_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_25_MULTI.mq5",
+    "master": ROOT / "CopyMonitor_Master_MT5_v1_16_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_26_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT4_v1_01_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_05_MULTI.mq4",
+    "master": ROOT / "CopyMonitor_Master_MT4_v1_02_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_06_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -323,7 +323,7 @@ ALERT_KEY_FAMILIES = (
 )
 
 
-# What the v1.25 / v1.05 robustness pass added. Each of these closes a way for
+# Robustness guards added since v1.25 / v1.05. Each closes a way for
 # the monitor to go silent, or to act on something it should not have touched,
 # so none of them may quietly disappear.
 BLIND_SPOT_TOKENS = (
@@ -392,6 +392,27 @@ BLIND_SPOT_TOKENS = (
     "InpOwnerMatchMode",
     # Clock skew must not freeze the watch in silence.
     "InpClockSkewToleranceSeconds",
+    # Reconnection must prove a continuous healthy window before acting again.
+    "InpLinkRecoverySeconds",
+    "InvalidateChannelTrust(",
+    "ChannelRecoveryConfirmed(",
+    # Automation requires an unambiguous owner and Master account.
+    "ValidateAutomationIdentity(",
+    # A restart must not discard an alert already waiting for Telegram.
+    "LoadTgQueue(",
+    "SaveTgQueue(",
+    # An uncertain create result must never be retried blindly.
+    "CM_CREATE_UNCERTAIN",
+    "FindUniqueOwnedPending(",
+    # The snapshot reader rejects malformed or out-of-order records.
+    "bool meta=false,en=false,malformed=false;",
+    "int phase=0;",
+    "if(malformed || !meta || !en ||",
+    # Lock ownership is acquired/released with compare-and-swap.
+    "GlobalVariableTemp(",
+    "GlobalVariableSetOnCondition(",
+    "InstanceFileLockPath(",
+    "g_instance_file_lock=FileOpen(",
 )
 
 
@@ -469,6 +490,7 @@ def check_tunables(source: dict[str, str], failures: list[str]) -> None:
             "InpTelegramChunkChars": "3000",
             "InpTelegramQueueMax": "40",
             "InpTelegramSendsPerCycle": "2",
+            "InpLinkRecoverySeconds": "3",
         },
         "master": {"InpPublishFailLogSeconds": "10"},
     }
@@ -595,6 +617,23 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
             failures,
         )
     require("OrderClose(" not in slave, "slave mt4: automatic position close detected", failures)
+
+
+def check_master_channel_lock(name: str, master: str, failures: list[str]) -> None:
+    """Only one publisher may own a FILE_COMMON channel at a time."""
+    for token in (
+        "ClaimChannelLock(",
+        "ReleaseChannelLock(",
+        '"CopyMonitorMulti\\\\CM_"+channel+".lock"',
+    ):
+        require(token in master, f"{name}: channel lock contract missing: {token}", failures)
+
+    body = function_body(master, "bool ClaimChannelLock(const string channel)")
+    require(
+        body is not None and "FILE_SHARE_READ" not in body and "FILE_SHARE_WRITE" not in body,
+        f"{name}: channel lock must remain exclusively open",
+        failures,
+    )
 
 
 def check_mt4_specifics(master: str, slave: str, failures: list[str]) -> None:
@@ -781,6 +820,7 @@ def main() -> int:
 
     check_protocol(source["master"], source["slave"], failures)
     check_publication(source["master"], failures)
+    check_master_channel_lock("master", source["master"], failures)
     check_telegram_contract(source["slave"], failures)
     check_automatic_corrections(
         "slave",
@@ -799,6 +839,7 @@ def main() -> int:
             "InpAllowNettingAccount",
             "SYMBOL_TRADE_FREEZE_LEVEL",
             "PositionNotFrozen(",
+            "SymbolIsSynchronized(",
         ),
         failures,
     )
@@ -807,6 +848,7 @@ def main() -> int:
     check_mt4_protocol(mt4["master"], mt4["slave"], failures)
     check_mt4_specifics(mt4["master"], mt4["slave"], failures)
     check_publication(mt4["master"], failures)
+    check_master_channel_lock("master mt4", mt4["master"], failures)
     check_telegram_contract(mt4["slave"], failures)
     check_automatic_corrections(
         "slave mt4",

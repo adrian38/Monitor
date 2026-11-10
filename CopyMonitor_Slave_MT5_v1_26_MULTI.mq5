@@ -1,21 +1,16 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT4_v1_05_MULTI.mq4                            |
+//| CopyMonitor_Slave_MT5_v1_26_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
 //| Pending orders: normally ignored as copy expectations; optional   |
 //| confirmed EXTRA pending in Slave can be deleted.                  |
-//| Port MT4 del Slave MT5 v1.25 MULTI: mismo snapshot, mismas reglas |
-//| de emparejamiento y los mismos limites de automatizacion.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.05"
-#property description "CopyMonitor Slave MT4 v1.05 MULTI"
-
-// MT4 no tiene CTrade ni MqlTradeRequest: las correcciones se envian con
-// OrderSend, OrderModify y OrderDelete, y el diagnostico sale de GetLastError.
-// Tampoco tiene OnTradeTransaction, asi que el disparo inmediato por cambio de
-// la cuenta Slave vive en OnTick comparando una firma del estado.
+#property version "1.26"
+#property description "CopyMonitor Slave MT5 v1.26 MULTI"
+#include <Trade/Trade.mqh>
+CTrade g_trade;
 
 enum ENUM_COPY_PROFILE
 {
@@ -25,11 +20,11 @@ enum ENUM_COPY_PROFILE
 };
 
 // Como se reconoce que una operacion del Slave pertenece a un owner. La
-// comparacion exacta es la regla historica; los otros dos modos existen
-// porque hay brokers que reescriben o recortan el comentario al activarse una
-// pendiente o tras un cierre parcial, y entonces la copia deja de reconocerse
-// como propia y se denuncia a la vez como copia faltante y como operacion de
-// ningun canal.
+// comparacion exacta es la regla historica y sigue siendo la recomendada;
+// los otros dos modos existen porque hay brokers que reescriben o recortan el
+// comentario al activarse una pendiente o tras un cierre parcial, y entonces
+// la copia deja de reconocerse como propia y se denuncia a la vez como copia
+// faltante y como operacion de ningun canal.
 enum ENUM_OWNER_MATCH
 {
    OWNER_MATCH_EXACT=0,
@@ -37,7 +32,7 @@ enum ENUM_OWNER_MATCH
    OWNER_MATCH_CONTAINS=2
 };
 
-//--- ===== MODE / PROFILE =====
+input group "===== MODE / PROFILE ====="
 input ENUM_COPY_PROFILE InpProfile                    = PROFILE_GENERIC;
 input bool              InpMultiMaster                = false;
 input string            InpAccountNick                = "SLAVE";
@@ -47,12 +42,12 @@ input string            InpSlaveID                    = "SLAVE_A";
 input int               InpMonitorSeconds             = 1;
 input bool              InpShowPanel                  = true;
 
-//--- ===== SINGLE MASTER (MultiMaster=false) =====
+input group "===== SINGLE MASTER (MultiMaster=false) ====="
 input string InpMasterChannel                         = "MASTER_A";
 input string InpSingleSlaveComment                    = ""; // empty = no Slave comment filter
 input double InpLotMultiplier                         = 1.0;
 
-//--- ===== MULTI MASTER (MultiMaster=true) =====
+input group "===== MULTI MASTER (MultiMaster=true) ====="
 // Positional lists. Example:
 // MASTER_280;MASTER_687
 // adrian_p_280;adrian_p
@@ -63,7 +58,7 @@ input string InpOwnerComments                         = "adrian_p_280;adrian_p";
 input string InpMasterProfiles                        = "PORTFOLIO46;GENERIC";
 input string InpVolumeMultipliers                     = "1.0;1.0";
 
-//--- ===== OWNERSHIP / IDENTITY =====
+input group "===== OWNERSHIP / IDENTITY ====="
 // Comparacion exacta por defecto. PREFIX y CONTAINS sirven para brokers que
 // anaden o recortan texto en el comentario de la operacion copiada.
 input ENUM_OWNER_MATCH InpOwnerMatchMode              = OWNER_MATCH_EXACT;
@@ -71,8 +66,12 @@ input ENUM_OWNER_MATCH InpOwnerMatchMode              = OWNER_MATCH_EXACT;
 // comprueba. Sin esto, cambiar el login del terminal Master conservando el
 // canal dejaba al Slave vigilando otra cuenta sin decir una palabra.
 input string InpExpectedMasterAccounts                = "";
+// El emparejamiento supone una copia por posicion Master, es decir cuenta de
+// cobertura. En una cuenta de compensacion dos copias del mismo simbolo se
+// funden en una posicion con el volumen sumado y el modelo entero se cae.
+input bool   InpAllowNettingAccount                   = false;
 
-//--- ===== INSTANCE SCOPE / IGNORE =====
+input group "===== INSTANCE SCOPE / IGNORE ====="
 // MASTER tickets to ignore. Examples:
 // 123456;123457
 // MASTER_280:123456;MASTER_687:998877
@@ -83,29 +82,29 @@ input string InpIgnoreMasterTickets                   = "";
 input string InpSlaveSymbolsFilter                    = "";
 input string InpSlaveSymbolsIgnore                    = "";
 
-//--- ===== SYMBOL EQUIVALENCE =====
+input group "===== SYMBOL EQUIVALENCE ====="
 // CHANNEL,MASTER_SYMBOL,SLAVE_SYMBOL;...
 // Example: MASTER_280,DE40,GER40;MASTER_687,US500,US500.cash
 input string InpSymbolMaps                            = "";
 
-//--- ===== OPEN POSITION MATCH =====
+input group "===== OPEN POSITION MATCH ====="
 input bool InpMatchEntryPrice                         = true;
 input int  InpEntryPriceTolerancePoints               = 100;
 input bool InpCheckStopLoss                           = true;
 input bool InpCheckTakeProfit                         = true;
 input int  InpSLTPTolerancePoints                     = 10;
 input int  InpVolumeToleranceSteps                    = 1;
-// Avisar de una posicion Slave sin pareja Master. Hasta la v1.04 esto estaba
-// cableado al perfil PORTFOLIO46, asi que el caso mas caro de todos -el
-// Master cerro y la copia sigue abierta- no tenia aviso por ticket en GENERIC
-// ni en LUNA: solo aparecia dentro del recuento agregado.
+// Avisar de una posicion Slave sin pareja Master. Hasta la v1.24 esto estaba
+// cableado al perfil PORTFOLIO46, asi que el caso mas caro de todos -el Master
+// cerro y la copia sigue abierta- no tenia aviso por ticket en GENERIC ni en
+// LUNA: sólo aparecia dentro del recuento agregado, sin ticket ni volumen.
 input bool InpAlertExtraPositions                     = true;
 // Tolerancias por simbolo, para cuando oro, indices y divisas conviven en la
 // misma cuenta y un unico valor en puntos es o muchisimo o nada.
-// SIMBOLO,entrada,sltp,pendiente;... Ejemplo: XAUUSD,500,100,500
+// SIMBOLO,entrada,sltp,pendiente;... Ejemplo: XAUUSD,500,100,500;US500,200,50,200
 input string InpSymbolTolerances                      = "";
 
-//--- ===== PENDING BEHAVIOR =====
+input group "===== PENDING BEHAVIOR ====="
 // For this Prop setup, copied pendings are NOT expected.
 input bool InpMonitorPendingOrders                    = true;
 input bool InpExpectPendingCopies                     = true;
@@ -123,13 +122,14 @@ input bool InpAutoModifyPending                       = true;
 input int  InpAutoFixPersistSeconds                   = 5;
 // But an owned pending that is confirmed EXTRA may be deleted.
 input bool InpAutoDeleteExtraPending                  = true;
-// Sube de 2 a 10 segundos en la v1.05. El borrado es la unica accion
+// Sube de 2 a 10 segundos en la v1.25. El borrado es la unica accion
 // destructiva del EA y dos segundos no dan tiempo a nadie a intervenir.
 input int  InpExtraPendingConfirmSeconds              = 10;
 // Tiempo que el snapshot del Master debe llevar seguido sin ninguna pendiente
 // antes de que una pendiente Slave huerfana pueda borrarse. La condicion
 // "el Master no tiene pendientes" la cumple tambien un Master recien
-// reconfigurado, que publica un snapshot valido y fresco con cero pendientes.
+// reconfigurado -otro filtro de simbolos, otro comentario, otra cuenta con el
+// mismo canal-, que publica un snapshot valido y fresco con cero pendientes.
 input int  InpEmptyMasterConfirmSeconds               = 30;
 input int  InpPendingPriceTolerancePoints             = 100;
 // Tope de acciones automaticas por hora y canal. Si la copiadora y el monitor
@@ -139,14 +139,15 @@ input int  InpMaxAutoActionsPerHour                   = 20;
 // Guarda de escala de precios: desvio maximo admitido entre el precio que
 // publica el Master y el precio actual del simbolo Slave antes de crear,
 // modificar o corregir. No es una guarda de deslizamiento, sino de
-// equivalencia equivocada. 0 = desactivada.
+// equivalencia equivocada: un mapeo que apunta a otro instrumento produce
+// diferencias de orden de magnitud. 0 = desactivada.
 input double InpMaxPriceDeviationPercent              = 50.0;
 
-//--- ===== LUNA LEGACY SETTINGS =====
+input group "===== LUNA LEGACY SETTINGS ====="
 input bool   InpLunaRequireComment                    = false;
 input string InpLunaCommentContains                   = "LUNA";
 
-//--- ===== SNAPSHOT / TELEGRAM =====
+input group "===== SNAPSHOT / TELEGRAM ====="
 input int    InpSnapshotStaleSeconds                  = 5;
 input bool   InpEnableTelegram                        = true;
 input string InpTelegramBotToken                      = "";
@@ -170,11 +171,16 @@ input int    InpMasterOfflineConfirmSeconds           = 30;
 // Lo mismo para el propio terminal Slave: desconectado, sus colecciones son
 // una foto cacheada y no se puede comparar nada contra ellas.
 input int    InpSlaveOfflineConfirmSeconds            = 30;
+// Tras recuperar un enlace se esperan snapshots estables antes de volver a
+// comparar o corregir. TERMINAL_CONNECTED no garantiza por si solo que todas
+// las colecciones ya esten sincronizadas.
+input int    InpLinkRecoverySeconds                    = 3;
 // Nivel de margen minimo de la cuenta Slave antes de avisar, en porcentaje.
 // 0 = desactivado.
 input double InpMinMarginLevelPercent                 = 0.0;
 // Aviso de arranque y latido periodico. Sin ellos no hay forma de saber que
-// el monitor sigue vivo ni que su Telegram funciona.
+// el monitor sigue vivo ni que su Telegram funciona: el que deberia avisar de
+// que el EA ha muerto es precisamente el EA que ha muerto.
 input bool   InpSendStartupNotice                     = true;
 input int    InpHeartbeatHours                        = 12;   // 0 = sin latido
 // Respaldo por notificacion push de MetaQuotes para los avisos CRITICO.
@@ -189,8 +195,8 @@ input bool   InpPersistAlertState                     = true;
 // InpNotifySnapshotProblems solo gobierna la falta transitoria de datos. Un
 // snapshot con el contrato roto se avisa siempre.
 
-//--- ===== TIMERS / LIMITES INTERNOS =====
-// Valores por defecto: los mismos que usa el Slave MT5.
+input group "===== TIMERS / LIMITES INTERNOS ====="
+// Valores por defecto: los que el EA usaba fijos hasta la v1.17.
 // Caducidad del estado interno (ventanas, avisos cerrados, bloqueos).
 input int InpStateTTLSeconds                          = 3600;
 // Lecturas del snapshot por ciclo y pausa entre ellas, para absorber una
@@ -213,13 +219,11 @@ input int InpTelegramSendsPerCycle                    = 2;
 input int InpTelegramRetryBaseSeconds                 = 5;
 input int InpTelegramRetryMaxSeconds                  = 300;
 
-//--- ===== DIAGNOSTIC =====
+input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
 
-// Los tickets del snapshot pueden venir de un Master MT5 y no caben en el int
-// de MT4, asi que viajan como long en todas las estructuras.
-struct PosRec { long ticket; string symbol; int type; double vol; double price; double sl; double tp; };
-struct OrdRec { long ticket; string symbol; int type; double vol; double price; double sl; double tp; double stoplimit; };
+struct PosRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; };
+struct OrdRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; double stoplimit; };
 struct Snap
 {
    string channel,nick,broker;
@@ -240,7 +244,7 @@ struct Owner
    double mult;
 };
 struct SymbolMapRec { string channel,master_symbol,slave_symbol; };
-struct IgnoreRec { string channel; long ticket; bool scoped; };
+struct IgnoreRec { string channel; ulong ticket; bool scoped; };
 // Tolerancias propias de un simbolo. Lo que no se declara usa el valor global.
 struct SymbolTolRec { string symbol; int entry,sltp,pending; };
 // Estado vivo de un canal entre ciclos. No se persiste: tras un reinicio toda
@@ -252,6 +256,8 @@ struct ChannelState
    // datos validos y recientes. Cero significa que no hay caida en curso.
    datetime offline_since;
    datetime unfresh_since;
+   // Desde cuando todos los requisitos de confianza vuelven a cumplirse.
+   datetime trusted_since;
    // Desde cuando el snapshot valido no trae ninguna pendiente, y la ultima
    // marca de escritura vista: un salto hacia atras delata un Master que
    // acaba de arrancar, posiblemente con otra configuracion.
@@ -272,6 +278,7 @@ struct Blocked { string key; datetime last_seen; };
 #define CM_CREATE_FAILED     0
 #define CM_CREATE_DONE       1
 #define CM_CREATE_UNVERIFIED 2
+#define CM_CREATE_UNCERTAIN  3
 
 // Resultado de la lectura de un snapshot.
 #define CM_SNAP_OK       0
@@ -289,6 +296,10 @@ struct Blocked { string key; datetime last_seen; };
 // completo: solo tiene que bastar para mirar el terminal.
 #define CM_PUSH_MAX_CHARS      200
 
+// Un comentario mas largo no sobrevive al terminal, asi que una copia creada
+// con el nunca volveria a reconocerse como propia.
+#define CM_COMMENT_MAX_LEN     31
+
 // Longitud maxima del identificador de canal. No es un ajuste: forma parte del
 // contrato compartido con el Master y los dos EAs deben declarar el mismo
 // valor, asi que se queda como constante.
@@ -298,55 +309,6 @@ struct Blocked { string key; datetime last_seen; };
 // absorbe el ruido de coma flotante. Si dos candidatas quedan dentro del
 // margen, no existe una identidad suficiente y el enlace se rechaza.
 #define CM_MATCH_EPS           1e-6
-
-// Codigos de tipo que viajan en el snapshot. Son los de MQL5 porque el Master
-// puede ser MT5; los cuatro tipos pendientes de MT4 (OP_BUYLIMIT..OP_SELLSTOP)
-// y los dos de mercado (OP_BUY, OP_SELL) tienen exactamente los mismos valores,
-// asi que no hace falta traducir nada. Los dos ultimos solo existen en MT5.
-#define CM_TYPE_BUY              0
-#define CM_TYPE_SELL             1
-#define CM_TYPE_BUY_LIMIT        2
-#define CM_TYPE_SELL_LIMIT       3
-#define CM_TYPE_BUY_STOP         4
-#define CM_TYPE_SELL_STOP        5
-#define CM_TYPE_BUY_STOP_LIMIT   6
-#define CM_TYPE_SELL_STOP_LIMIT  7
-
-// Errores del servidor de trading de MT4 que este EA interpreta. Se declaran
-// aqui con nombre propio para no depender de los alias del terminal.
-#define CM_ERR_NO_RESULT              1
-#define CM_ERR_COMMON_ERROR           2
-#define CM_ERR_INVALID_TRADE_PARAM    3
-#define CM_ERR_SERVER_BUSY            4
-#define CM_ERR_NO_CONNECTION          6
-#define CM_ERR_TOO_FREQUENT           8
-#define CM_ERR_ACCOUNT_DISABLED      64
-#define CM_ERR_INVALID_ACCOUNT       65
-#define CM_ERR_TRADE_TIMEOUT        128
-#define CM_ERR_INVALID_PRICE        129
-#define CM_ERR_INVALID_STOPS        130
-#define CM_ERR_INVALID_VOLUME       131
-#define CM_ERR_MARKET_CLOSED        132
-#define CM_ERR_TRADE_DISABLED       133
-#define CM_ERR_NOT_ENOUGH_MONEY     134
-#define CM_ERR_PRICE_CHANGED        135
-#define CM_ERR_OFF_QUOTES           136
-#define CM_ERR_BROKER_BUSY          137
-#define CM_ERR_REQUOTE              138
-#define CM_ERR_ORDER_LOCKED         139
-#define CM_ERR_LONG_ONLY            140
-#define CM_ERR_TOO_MANY_REQUESTS    141
-#define CM_ERR_TRADE_MODIFY_DENIED  145
-#define CM_ERR_TRADE_CONTEXT_BUSY   146
-#define CM_ERR_EXPIRATION_DENIED    147
-#define CM_ERR_TOO_MANY_ORDERS      148
-#define CM_ERR_HEDGE_PROHIBITED     149
-#define CM_ERR_FIFO_PROHIBITED      150
-#define CM_ERR_INVALID_TICKET      4108
-
-// MT4 limita el comentario de una orden a 31 caracteres. Un comentario
-// propietario mas largo no podria coincidir nunca con una orden real.
-#define CM_MT4_COMMENT_MAX_LEN       31
 
 bool g_busy=false;
 AlertState g_alerts[];
@@ -373,14 +335,24 @@ long         g_expected_accounts[];
 // Estado vivo por canal, en el mismo orden que g_owners.
 ChannelState g_channel_state[];
 
-// Conexion del propio terminal Slave. Desconectado, la lista de operaciones
-// es la ultima foto conocida: comparar contra ella es comparar con el pasado.
+// Conexion del propio terminal Slave. Desconectado, PositionsTotal() devuelve
+// la foto cacheada: comparar contra ella es comparar contra el pasado.
 datetime g_slave_offline_since=0;
 bool     g_slave_link_down=false;
+datetime g_slave_trusted_since=0;
 
-// Latido y aviso de arranque.
+// Latido: proximo instante en que toca confirmar que el monitor sigue vivo.
 datetime g_next_heartbeat=0;
+// El aviso de arranque se envia en el primer ciclo, cuando ya hay snapshots
+// que resumir.
 bool     g_send_startup=false;
+
+// El bloqueo de instancia se adquiere con compare-and-set. Solo quien conserva
+// este token puede refrescarlo o liberarlo; un OnInit fallido nunca borra el de
+// otra instancia.
+double   g_instance_lock_token=0.0;
+bool     g_instance_lock_owned=false;
+int      g_instance_file_lock=INVALID_HANDLE;
 
 // Telegram: cola de reintento y ultimo error visible en el panel.
 string   g_tg_queue[];
@@ -394,6 +366,7 @@ int      g_tg_fail_streak=0;
 // tormenta no genere una notificacion por mensaje perdido.
 int      g_tg_dropped_seen=0;
 datetime g_tg_drop_push=0;
+bool     g_tg_queue_dirty=false;
 
 // El conjunto de avisos activos cambio y hay que volcarlo a disco. Solo se
 // marca al entrar o salir un aviso, no al refrescar su marca de tiempo: de lo
@@ -404,17 +377,6 @@ bool     g_alerts_dirty=false;
 // correccion fallaria con CRITICO en cada ventana en lugar de avisar una vez.
 bool   g_trade_allowed=false;
 string g_trade_block_reason="";
-// El contexto de trading de MT4 es unico para todo el terminal. Si otro EA lo
-// tiene ocupado no hay nada que avisar: se deja el candidato vivo y se
-// reintenta en el ciclo siguiente.
-bool   g_trade_busy=false;
-
-// Codigo del ultimo error de trading. Sustituye al retcode de MqlTradeResult.
-int    g_last_trade_error=0;
-
-// Firma del estado de la cuenta Slave en el ultimo ciclo. MT4 no tiene
-// OnTradeTransaction, asi que OnTick la compara para reaccionar al instante.
-string g_last_state="";
 
 //---------------- utility ----------------
 string Trim(string s)
@@ -445,14 +407,29 @@ bool ChannelIdValid(const string id)
    }
    return true;
 }
-string SnapFile(const string c){ return "CopyMonitorMulti\\CM_"+c+".txt"; }
 
-// MT4 no admite %I64u en StringFormat de forma fiable: los tickets se escriben
-// con IntegerToString, que ya acepta un long.
-string TicketText(const long ticket)
+bool InstanceIdValid(const string id)
 {
-   return IntegerToString(ticket);
+   int len=StringLen(id);
+   if(len<1 || len>CM_CHANNEL_MAX_LEN) return false;
+
+   for(int i=0;i<len;i++)
+   {
+      ushort c=StringGetCharacter(id,i);
+      bool ok=(c>='A' && c<='Z') || (c>='a' && c<='z') ||
+              (c>='0' && c<='9') || c=='_' || c=='-';
+      if(!ok) return false;
+   }
+   return true;
 }
+
+bool AutomaticCorrectionsEnabled()
+{
+   return InpAutoFixPositionSLTP || InpAutoFixPendingSLTP ||
+          InpAutoCreateMissingPending || InpAutoModifyPending ||
+          InpAutoDeleteExtraPending;
+}
+string SnapFile(const string c){ return "CopyMonitorMulti\\CM_"+c+".txt"; }
 
 void SplitClean(string raw,const ushort sep,string &out[])
 {
@@ -489,7 +466,7 @@ string ProfileText(ENUM_COPY_PROFILE p)
 string AccountText(const long account)
 {
    if(account<=0) return "NO DISPONIBLE";
-   return IntegerToString(account);
+   return StringFormat("%I64d",account);
 }
 string BrokerText(const string broker)
 {
@@ -530,18 +507,18 @@ string PositionReviewAction()
 }
 string PositionTypeText(const int type)
 {
-   if(type==CM_TYPE_BUY) return "BUY";
-   if(type==CM_TYPE_SELL) return "SELL";
+   if(type==POSITION_TYPE_BUY) return "BUY";
+   if(type==POSITION_TYPE_SELL) return "SELL";
    return "DESCONOCIDO";
 }
 string OrderTypeText(const int type)
 {
-   if(type==CM_TYPE_BUY_LIMIT) return "BUY LIMIT";
-   if(type==CM_TYPE_SELL_LIMIT) return "SELL LIMIT";
-   if(type==CM_TYPE_BUY_STOP) return "BUY STOP";
-   if(type==CM_TYPE_SELL_STOP) return "SELL STOP";
-   if(type==CM_TYPE_BUY_STOP_LIMIT) return "BUY STOP LIMIT";
-   if(type==CM_TYPE_SELL_STOP_LIMIT) return "SELL STOP LIMIT";
+   if(type==ORDER_TYPE_BUY_LIMIT) return "BUY LIMIT";
+   if(type==ORDER_TYPE_SELL_LIMIT) return "SELL LIMIT";
+   if(type==ORDER_TYPE_BUY_STOP) return "BUY STOP";
+   if(type==ORDER_TYPE_SELL_STOP) return "SELL STOP";
+   if(type==ORDER_TYPE_BUY_STOP_LIMIT) return "BUY STOP LIMIT";
+   if(type==ORDER_TYPE_SELL_STOP_LIMIT) return "SELL STOP LIMIT";
    return "DESCONOCIDO";
 }
 string PriceText(const double value)
@@ -553,47 +530,20 @@ string StopText(const double value,const string empty_text)
    if(MathAbs(value)<1e-12) return empty_text;
    return PriceText(value);
 }
-// Incluye los dos tipos STOP LIMIT que solo existen en MT5: el snapshot puede
-// venir de un Master MT5 y hay que saber leerlos aunque MT4 no pueda crearlos.
-bool IsPendingType(const int t)
+bool IsPending(const ENUM_ORDER_TYPE t)
 {
-   return t==CM_TYPE_BUY_LIMIT || t==CM_TYPE_SELL_LIMIT ||
-          t==CM_TYPE_BUY_STOP || t==CM_TYPE_SELL_STOP ||
-          t==CM_TYPE_BUY_STOP_LIMIT || t==CM_TYPE_SELL_STOP_LIMIT;
-}
-bool IsPositionType(const int t)
-{
-   return t==CM_TYPE_BUY || t==CM_TYPE_SELL;
+   return t==ORDER_TYPE_BUY_LIMIT || t==ORDER_TYPE_SELL_LIMIT ||
+          t==ORDER_TYPE_BUY_STOP || t==ORDER_TYPE_SELL_STOP ||
+          t==ORDER_TYPE_BUY_STOP_LIMIT || t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 bool IsStopLimitType(const int t)
 {
-   return t==CM_TYPE_BUY_STOP_LIMIT || t==CM_TYPE_SELL_STOP_LIMIT;
+   return t==ORDER_TYPE_BUY_STOP_LIMIT || t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 bool IsBuyPendingType(const int t)
 {
-   return t==CM_TYPE_BUY_LIMIT || t==CM_TYPE_BUY_STOP ||
-          t==CM_TYPE_BUY_STOP_LIMIT;
-}
-
-//---------------- MT4 order selection ----------------
-// OrderSelect por ticket encuentra tambien operaciones del historial, asi que
-// comprobar el ticket no basta: sin mirar OrderCloseTime un aviso sobre una
-// orden ya borrada no se resolveria nunca.
-bool SelectLiveOrder(const long ticket)
-{
-   if(ticket<=0 || ticket>INT_MAX) return false;
-   if(!OrderSelect((int)ticket,SELECT_BY_TICKET)) return false;
-   return OrderCloseTime()==0;
-}
-bool SelectLivePending(const long ticket)
-{
-   if(!SelectLiveOrder(ticket)) return false;
-   return IsPendingType(OrderType());
-}
-bool SelectLivePosition(const long ticket)
-{
-   if(!SelectLiveOrder(ticket)) return false;
-   return IsPositionType(OrderType());
+   return t==ORDER_TYPE_BUY_LIMIT || t==ORDER_TYPE_BUY_STOP ||
+          t==ORDER_TYPE_BUY_STOP_LIMIT;
 }
 
 //---------------- configuration ----------------
@@ -620,12 +570,12 @@ bool LoadOwners(Owner &o[])
          Print("[CM SLAVE] InpLotMultiplier debe ser mayor que cero.");
          return false;
       }
-      // Un comentario mas largo del limite de MT4 no coincidiria con ninguna
-      // orden del terminal: la vigilancia quedaria vacia sin avisar.
-      if(StringLen(x.comment)>CM_MT4_COMMENT_MAX_LEN)
+      // Un comentario que el terminal recorta no podria coincidir con ninguna
+      // operacion, y una copia creada con el nunca se reconoceria como propia.
+      if(StringLen(x.comment)>CM_COMMENT_MAX_LEN)
       {
-         PrintFormat("[CM SLAVE] InpSingleSlaveComment supera los %d caracteres que admite MT4.",
-                     CM_MT4_COMMENT_MAX_LEN);
+         PrintFormat("[CM SLAVE] InpSingleSlaveComment supera %d caracteres.",
+                     CM_COMMENT_MAX_LEN);
          return false;
       }
 
@@ -634,10 +584,10 @@ bool LoadOwners(Owner &o[])
    }
 
    string ch[],co[],pr[],mu[];
-   SplitClean(InpMasterChannels,(ushort)';',ch);
-   SplitClean(InpOwnerComments,(ushort)';',co);
-   SplitClean(InpMasterProfiles,(ushort)';',pr);
-   SplitClean(InpVolumeMultipliers,(ushort)';',mu);
+   SplitClean(InpMasterChannels,';',ch);
+   SplitClean(InpOwnerComments,';',co);
+   SplitClean(InpMasterProfiles,';',pr);
+   SplitClean(InpVolumeMultipliers,';',mu);
 
    int n=ArraySize(ch);
    if(n<1 || ArraySize(co)!=n || ArraySize(pr)!=n || ArraySize(mu)!=n)
@@ -673,10 +623,10 @@ bool LoadOwners(Owner &o[])
          PrintFormat("[CM SLAVE] El comentario propietario %d no puede estar vacio.",i+1);
          return false;
       }
-      if(StringLen(o[i].comment)>CM_MT4_COMMENT_MAX_LEN)
+      if(StringLen(o[i].comment)>CM_COMMENT_MAX_LEN)
       {
-         PrintFormat("[CM SLAVE] El comentario propietario %d supera los %d caracteres que admite MT4: %s",
-                     i+1,CM_MT4_COMMENT_MAX_LEN,o[i].comment);
+         PrintFormat("[CM SLAVE] El comentario propietario %d supera %d caracteres: %s",
+                     i+1,CM_COMMENT_MAX_LEN,o[i].comment);
          return false;
       }
       if(o[i].mult<=0)
@@ -733,7 +683,7 @@ bool LoadExpectedAccounts()
    StringReplace(list,",",";");
 
    string tokens[];
-   SplitClean(list,(ushort)';',tokens);
+   SplitClean(list,';',tokens);
 
    if(ArraySize(tokens)!=ArraySize(g_owners))
    {
@@ -765,6 +715,32 @@ bool LoadExpectedAccounts()
    return true;
 }
 
+// Sin comentario propietario el modo single-master ve como propias todas las
+// operaciones de la cuenta. Sin cuenta esperada, un publicador equivocado con
+// el mismo canal tambien podria autorizar cambios. Ambas configuraciones son
+// validas para monitorizar, pero no para tocar la cuenta.
+bool ValidateAutomationIdentity()
+{
+   if(!AutomaticCorrectionsEnabled()) return true;
+
+   for(int i=0;i<ArraySize(g_owners);i++)
+   {
+      if(Trim(g_owners[i].comment)=="")
+      {
+         PrintFormat("[CM SLAVE] El canal %s necesita comentario propietario para activar correcciones automáticas.",
+                     g_owners[i].channel);
+         return false;
+      }
+      if(i>=ArraySize(g_expected_accounts) || g_expected_accounts[i]<=0)
+      {
+         PrintFormat("[CM SLAVE] El canal %s necesita InpExpectedMasterAccounts para activar correcciones automáticas.",
+                     g_owners[i].channel);
+         return false;
+      }
+   }
+   return true;
+}
+
 // Tolerancias por simbolo: SIMBOLO,entrada,sltp,pendiente. Lo que no aparece
 // usa el valor global, asi que la lista solo declara las excepciones.
 bool LoadSymbolTolerances()
@@ -775,12 +751,12 @@ bool LoadSymbolTolerances()
       return true;
 
    string entries[];
-   SplitClean(InpSymbolTolerances,(ushort)';',entries);
+   SplitClean(InpSymbolTolerances,';',entries);
 
    for(int i=0;i<ArraySize(entries);i++)
    {
       string f[];
-      int n=StringSplit(entries[i],(ushort)',',f);
+      int n=StringSplit(entries[i],',',f);
 
       if(n!=4)
       {
@@ -833,12 +809,12 @@ bool LoadSymbolMaps()
       return true;
 
    string entries[];
-   SplitClean(InpSymbolMaps,(ushort)';',entries);
+   SplitClean(InpSymbolMaps,';',entries);
 
    for(int i=0;i<ArraySize(entries);i++)
    {
       string f[];
-      int n=StringSplit(entries[i],(ushort)',',f);
+      int n=StringSplit(entries[i],',',f);
 
       if(n!=3)
       {
@@ -892,7 +868,7 @@ bool LoadIgnoredTickets()
    StringReplace(list,",",";");
 
    string tokens[];
-   SplitClean(list,(ushort)';',tokens);
+   SplitClean(list,';',tokens);
 
    for(int i=0;i<ArraySize(tokens);i++)
    {
@@ -930,7 +906,7 @@ bool LoadIgnoredTickets()
 
       IgnoreRec rec;
       rec.channel=channel;
-      rec.ticket=(long)StringToInteger(digits);
+      rec.ticket=(ulong)StringToInteger(digits);
       rec.scoped=(colon>=0);
 
       if(rec.ticket==0)
@@ -953,7 +929,7 @@ bool LoadIgnoredTickets()
 void LoadSymbolList(string raw,string &out[])
 {
    StringReplace(raw,";",",");
-   SplitClean(raw,(ushort)',',out);
+   SplitClean(raw,',',out);
 }
 
 // Estado vivo por canal, creado una vez con la configuracion: todas las
@@ -966,6 +942,7 @@ void BuildChannelState()
       g_channel_state[i].channel=g_owners[i].channel;
       g_channel_state[i].offline_since=0;
       g_channel_state[i].unfresh_since=0;
+      g_channel_state[i].trusted_since=0;
       g_channel_state[i].empty_ord_since=0;
       g_channel_state[i].last_written=0;
       g_channel_state[i].actions_since=0;
@@ -990,6 +967,8 @@ bool BuildConfig()
       return false;
    if(!LoadExpectedAccounts())
       return false;
+   if(!ValidateAutomationIdentity())
+      return false;
    if(!LoadSymbolTolerances())
       return false;
 
@@ -999,7 +978,7 @@ bool BuildConfig()
    return true;
 }
 
-bool MasterTicketIgnored(const string channel,const long ticket)
+bool MasterTicketIgnored(const string channel,const ulong ticket)
 {
    for(int i=0;i<ArraySize(g_ignored);i++)
    {
@@ -1045,8 +1024,6 @@ string UrlEncode(const string src)
 }
 bool TgConfigured()
 {
-   // WebRequest no existe en el probador de MT4: alli no se puede avisar.
-   if(IsTesting() || IsOptimization()) return false;
    return InpEnableTelegram && InpTelegramBotToken!="" && InpTelegramChatID!="";
 }
 // Respaldo por notificacion push de MetaQuotes. No sustituye al aviso: lo que
@@ -1056,7 +1033,6 @@ bool TgConfigured()
 void PushFallback(const string text)
 {
    if(!InpEnablePushFallback) return;
-   if(IsTesting() || IsOptimization()) return;
 
    string body=text;
    StringReplace(body,"\n"," | ");
@@ -1071,7 +1047,7 @@ void PushFallback(const string text)
 string AlertDigest(const string msg)
 {
    string lines[];
-   int n=StringSplit(msg,(ushort)'\n',lines);
+   int n=StringSplit(msg,'\n',lines);
    string digest="";
 
    for(int i=0;i<n && StringLen(digest)<CM_PUSH_MAX_CHARS;i++)
@@ -1184,7 +1160,7 @@ void TgSplit(const string msg,string &chunks[])
    ArrayResize(chunks,0);
 
    string lines[];
-   int n=StringSplit(msg,(ushort)'\n',lines);
+   int n=StringSplit(msg,'\n',lines);
    string current="";
 
    for(int i=0;i<n;i++)
@@ -1236,6 +1212,7 @@ void TgEnqueue(const string chunk)
 
    ArrayResize(g_tg_queue,n+1);
    g_tg_queue[n]=chunk;
+   g_tg_queue_dirty=true;
 }
 // Todo aviso entra en la cola y sale en TgFlush. Publicar en linea ataba la
 // duracion del ciclo al tiempo de respuesta de api.telegram.org: con un
@@ -1261,17 +1238,6 @@ bool Tg(const string msg)
 
    return false;
 }
-// Un latido que depende de Telegram no sirve cuando Telegram es justo lo que
-// ha fallado: si no esta configurado, al menos sale por push.
-void TgOrPush(const string msg)
-{
-   if(TgConfigured())
-   {
-      Tg(msg);
-      return;
-   }
-   PushFallback(AlertDigest(msg));
-}
 void TgFlush()
 {
    if(!TgConfigured()) return;
@@ -1285,6 +1251,7 @@ void TgFlush()
       int n=ArraySize(g_tg_queue);
       for(int i=0;i<n-1;i++) g_tg_queue[i]=g_tg_queue[i+1];
       ArrayResize(g_tg_queue,n-1);
+      g_tg_queue_dirty=true;
    }
 }
 int AlertIndex(const string k)
@@ -1436,7 +1403,7 @@ void SaveAlertState()
    {
       if(!g_alerts[i].active) continue;
       // Tabulador como separador: las claves llevan '|' pero nunca tabuladores.
-      FileWrite(h,IntegerToString((long)g_alerts[i].last)+"\t"+g_alerts[i].key);
+      FileWrite(h,StringFormat("%I64d\t%s",(long)g_alerts[i].last,g_alerts[i].key));
    }
 
    FileFlush(h);
@@ -1505,6 +1472,91 @@ void LoadAlertState()
    if(discarded>0) g_alerts_dirty=true;
 }
 
+string TgQueueFile()
+{
+   return "CopyMonitorMulti\\CM_TGQUEUE_"+SafeFileToken(InpSlaveID)+".txt";
+}
+string TgQueueTemp()
+{
+   return "CopyMonitorMulti\\CM_TGQUEUE_"+SafeFileToken(InpSlaveID)+".tmp";
+}
+string QueueEncode(string value)
+{
+   StringReplace(value,"\\","\\\\");
+   StringReplace(value,"\r","\\r");
+   StringReplace(value,"\n","\\n");
+   StringReplace(value,"\t","\\t");
+   return value;
+}
+string QueueDecode(const string value)
+{
+   string out="";
+   for(int i=0;i<StringLen(value);i++)
+   {
+      ushort c=StringGetCharacter(value,i);
+      if(c!='\\' || i+1>=StringLen(value))
+      {
+         out+=ShortToString(c);
+         continue;
+      }
+
+      ushort next=StringGetCharacter(value,++i);
+      if(next=='n') out+="\n";
+      else if(next=='r') out+="\r";
+      else if(next=='t') out+="\t";
+      else out+=ShortToString(next);
+   }
+   return out;
+}
+void SaveTgQueue()
+{
+   if(!InpPersistAlertState || !g_tg_queue_dirty) return;
+
+   FolderCreate("CopyMonitorMulti");
+   int h=FileOpen(TgQueueTemp(),FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("[CM SLAVE] No se pudo guardar la cola de Telegram. err=%d",GetLastError());
+      return;
+   }
+
+   for(int i=0;i<ArraySize(g_tg_queue);i++)
+      FileWrite(h,QueueEncode(g_tg_queue[i]));
+   FileFlush(h);
+   FileClose(h);
+
+   if(!FileMove(TgQueueTemp(),0,TgQueueFile(),FILE_REWRITE))
+   {
+      PrintFormat("[CM SLAVE] No se pudo publicar la cola de Telegram. err=%d",GetLastError());
+      FileDelete(TgQueueTemp());
+      return;
+   }
+   g_tg_queue_dirty=false;
+}
+void LoadTgQueue()
+{
+   if(!InpPersistAlertState) return;
+   int h=FileOpen(TgQueueFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE) return;
+
+   ArrayResize(g_tg_queue,0);
+   while(!FileIsEnding(h))
+   {
+      string line=FileReadString(h);
+      if(line=="") continue;
+      if(ArraySize(g_tg_queue)>=InpTelegramQueueMax)
+      {
+         g_tg_dropped++;
+         continue;
+      }
+      int n=ArraySize(g_tg_queue);
+      ArrayResize(g_tg_queue,n+1);
+      g_tg_queue[n]=QueueDecode(line);
+   }
+   FileClose(h);
+   g_tg_queue_dirty=(g_tg_dropped>0);
+}
+
 //---------------- snapshot ----------------
 void AddPos(PosRec &a[],const PosRec &x){ int n=ArraySize(a); ArrayResize(a,n+1); a[n]=x; }
 void AddOrd(OrdRec &a[],const OrdRec &x){ int n=ArraySize(a); ArrayResize(a,n+1); a[n]=x; }
@@ -1530,15 +1582,16 @@ int ReadSnapOnce(const string channel,Snap &s)
    int h=FileOpen(SnapFile(channel),FILE_COMMON|FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(h==INVALID_HANDLE) return CM_SNAP_MISSING;
 
-   bool meta=false,en=false;
+   bool meta=false,en=false,malformed=false;
+   int phase=0; // 0=META, 1=POS, 2=ORD, 3=END
    int schema=0;
    string meta_channel="";
 
    while(!FileIsEnding(h))
    {
       string line=FileReadString(h); if(line=="")continue;
-      string p[]; int n=StringSplit(line,(ushort)'|',p); if(n<=0)continue;
-      if(p[0]=="META" && n>=8 && !meta)
+      string p[]; int n=StringSplit(line,'|',p); if(n<=0)continue;
+      if(p[0]=="META" && n>=8 && !meta && phase==0)
       {
          schema=SnapshotSchema(p[1]);
          if(schema==0)
@@ -1563,31 +1616,61 @@ int ReadSnapOnce(const string channel,Snap &s)
          s.connected=(schema>=4 && n>=10)
             ? ((StringToInteger(p[9])!=0) ? CM_LINK_UP : CM_LINK_DOWN)
             : CM_LINK_UNKNOWN;
+         if(s.written<=0 || meta_channel=="" || s.account<=0 ||
+            s.open_total<0 || s.pending_total<0 ||
+            (schema>=4 && p[9]!="0" && p[9]!="1"))
+         {
+            malformed=true;
+            break;
+         }
          s.schema=schema;
          meta=true;
+         phase=1;
       }
-      else if(p[0]=="POS" && n>=8)
+      else if(p[0]=="POS" && n>=8 && meta && phase<=1)
       {
-         PosRec x; x.ticket=(long)StringToInteger(p[1]);x.symbol=p[2];x.type=(int)StringToInteger(p[3]);
-         x.vol=StringToDouble(p[4]);x.price=StringToDouble(p[5]);x.sl=StringToDouble(p[6]);x.tp=StringToDouble(p[7]);AddPos(s.pos,x);
+         PosRec x; x.ticket=(ulong)StringToInteger(p[1]);x.symbol=p[2];x.type=(int)StringToInteger(p[3]);
+         x.vol=StringToDouble(p[4]);x.price=StringToDouble(p[5]);x.sl=StringToDouble(p[6]);x.tp=StringToDouble(p[7]);
+         if(x.ticket==0 || x.symbol=="" ||
+            (x.type!=POSITION_TYPE_BUY && x.type!=POSITION_TYPE_SELL) ||
+            x.vol<=0.0 || x.price<=0.0 || x.sl<0.0 || x.tp<0.0)
+         {
+            malformed=true;
+            break;
+         }
+         AddPos(s.pos,x);
+         phase=1;
       }
-      else if(p[0]=="ORD" && n>=8)
+      else if(p[0]=="ORD" && n>=8 && meta && phase<=2)
       {
-         OrdRec x; x.ticket=(long)StringToInteger(p[1]);x.symbol=p[2];x.type=(int)StringToInteger(p[3]);
+         OrdRec x; x.ticket=(ulong)StringToInteger(p[1]);x.symbol=p[2];x.type=(int)StringToInteger(p[3]);
          x.vol=StringToDouble(p[4]);x.price=StringToDouble(p[5]);x.sl=StringToDouble(p[6]);x.tp=StringToDouble(p[7]);
          // El precio stop-limit solo viaja desde el esquema 3.
          x.stoplimit=(n>=9)?StringToDouble(p[8]):0.0;
+         if(x.ticket==0 || x.symbol=="" || !IsPending((ENUM_ORDER_TYPE)x.type) ||
+            x.vol<=0.0 || x.price<=0.0 || x.sl<0.0 || x.tp<0.0 || x.stoplimit<0.0 ||
+            (schema>=3 && IsStopLimitType(x.type) && x.stoplimit<=0.0))
+         {
+            malformed=true;
+            break;
+         }
          AddOrd(s.ord,x);
+         phase=2;
       }
-      else if(p[0]=="END")
+      else if(p[0]=="END" && n==1 && meta && !en)
       {
          en=true;
+         phase=3;
+      }
+      else
+      {
+         malformed=true;
          break;
       }
    }
    FileClose(h);
 
-   if(!meta || !en ||
+   if(malformed || !meta || !en ||
       s.open_total!=ArraySize(s.pos) ||
       s.pending_total!=ArraySize(s.ord))
       return CM_SNAP_PARTIAL;
@@ -1654,19 +1737,6 @@ string ExpectedSlaveSymbol(const string channel,const string master_symbol)
          return g_symbol_maps[i].slave_symbol;
    return master_symbol;
 }
-// MT4 no tiene SymbolInfoDouble para volumen ni stops: todo sale de MarketInfo.
-double VolumeStepOf(const string s){ return MarketInfo(s,MODE_LOTSTEP); }
-double VolumeMinOf(const string s){ return MarketInfo(s,MODE_MINLOT); }
-double VolumeMaxOf(const string s){ return MarketInfo(s,MODE_MAXLOT); }
-int    DigitsOf(const string s)
-{
-   int digits=(int)MarketInfo(s,MODE_DIGITS);
-   return (digits>=0 && digits<=8) ? digits : 5;
-}
-double NormPrice(const string s,const double price)
-{
-   return NormalizeDouble(price,DigitsOf(s));
-}
 int VolumeDigits(const double step)
 {
    for(int digits=0;digits<=8;digits++)
@@ -1677,9 +1747,9 @@ int VolumeDigits(const double step)
 double ExpectedSlaveVolume(const string slave_symbol,const double master_volume,const double multiplier)
 {
    double raw=master_volume*multiplier;
-   double step=VolumeStepOf(slave_symbol);
-   double minimum=VolumeMinOf(slave_symbol);
-   double maximum=VolumeMaxOf(slave_symbol);
+   double step=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_STEP);
+   double minimum=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_MIN);
+   double maximum=SymbolInfoDouble(slave_symbol,SYMBOL_VOLUME_MAX);
    if(step<=0) return raw;
 
    double normalized=MathRound(raw/step)*step;
@@ -1689,7 +1759,7 @@ double ExpectedSlaveVolume(const string slave_symbol,const double master_volume,
 }
 string VolumeText(const string symbol,const double volume)
 {
-   double step=VolumeStepOf(symbol);
+   double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
    return DoubleToString(volume,step>0 ? VolumeDigits(step) : 4);
 }
 string MasterPendingDetails(const Owner &o,const OrdRec &order)
@@ -1701,7 +1771,7 @@ string MasterPendingDetails(const Owner &o,const OrdRec &order)
       "Tipo: "+OrderTypeText(order.type)+"\n"+
       "Símbolo Master: "+order.symbol+"\n"+
       "Símbolo esperado Slave: "+slave_symbol+"\n"+
-      "Ticket Master: "+TicketText(order.ticket)+"\n\n"+
+      "Ticket Master: "+StringFormat("%I64u",order.ticket)+"\n\n"+
       "Volumen Master: "+VolumeText(slave_symbol,order.vol)+"\n"+
       "Volumen Slave esperado: "+VolumeText(slave_symbol,expected_volume)+"\n"+
       "Precio de entrada: "+PriceText(order.price);
@@ -1718,7 +1788,7 @@ string SlavePendingDetails(const OrdRec &order)
       "Estado: ORDEN PENDIENTE\n"+
       "Tipo: "+OrderTypeText(order.type)+"\n"+
       "Símbolo: "+order.symbol+"\n"+
-      "Ticket Slave: "+TicketText(order.ticket)+"\n"+
+      "Ticket Slave: "+StringFormat("%I64u",order.ticket)+"\n"+
       "Volumen Slave: "+VolumeText(order.symbol,order.vol)+"\n"+
       "Precio de entrada: "+PriceText(order.price);
    if(IsStopLimitType(order.type))
@@ -1759,24 +1829,24 @@ bool AlertExtraPositions(const Owner &o)
 {
    return InpAlertExtraPositions || o.profile==PROFILE_PORTFOLIO46;
 }
-// En MT4 posiciones y pendientes comparten la lista de operaciones, asi que las
-// dos colecciones se filtran por tipo. Hacia atras: si el terminal retira una
-// entrada mientras se recorre, los indices ya visitados no se desplazan.
 void SlavePosForOwner(const Owner &o,PosRec &a[])
 {
    ArrayResize(a,0);
-   for(int i=OrdersTotal()-1;i>=0;i--)
+   // Hacia atras: si el terminal retira una posicion mientras se recorre la
+   // coleccion, los indices ya visitados no se desplazan.
+   for(int i=PositionsTotal()-1;i>=0;i--)
    {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))continue;
-      if(!IsPositionType(OrderType()))continue;
-      string symbol=OrderSymbol();
+      ulong tk=PositionGetTicket(i); if(tk==0)continue;
+      string symbol=PositionGetString(POSITION_SYMBOL);
       if(symbol=="")continue;
       if(!SlaveSymbolAllowed(symbol))continue;
-      if(!OwnerCommentMatch(o,OrderComment()))continue;
 
-      PosRec x; x.ticket=(long)OrderTicket();x.symbol=symbol;x.type=OrderType();
-      x.vol=OrderLots();x.price=OrderOpenPrice();
-      x.sl=OrderStopLoss();x.tp=OrderTakeProfit();AddPos(a,x);
+      string c=PositionGetString(POSITION_COMMENT);
+      if(!OwnerCommentMatch(o,c))continue;
+
+      PosRec x; x.ticket=tk;x.symbol=symbol;x.type=(int)PositionGetInteger(POSITION_TYPE);
+      x.vol=PositionGetDouble(POSITION_VOLUME);x.price=PositionGetDouble(POSITION_PRICE_OPEN);
+      x.sl=PositionGetDouble(POSITION_SL);x.tp=PositionGetDouble(POSITION_TP);AddPos(a,x);
    }
 }
 void SlaveOrdForOwner(const Owner &o,OrdRec &a[])
@@ -1784,28 +1854,27 @@ void SlaveOrdForOwner(const Owner &o,OrdRec &a[])
    ArrayResize(a,0);
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))continue;
-      if(!IsPendingType(OrderType()))continue;
-      string symbol=OrderSymbol();
+      ulong tk=OrderGetTicket(i);if(tk==0)continue;
+      ENUM_ORDER_TYPE t=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);if(!IsPending(t))continue;
+      string symbol=OrderGetString(ORDER_SYMBOL);
       if(symbol=="")continue;
       if(!SlaveSymbolAllowed(symbol))continue;
-      if(!OwnerCommentMatch(o,OrderComment()))continue;
-      OrdRec x;x.ticket=(long)OrderTicket();x.symbol=symbol;x.type=OrderType();x.vol=OrderLots();
-      x.price=OrderOpenPrice();x.sl=OrderStopLoss();x.tp=OrderTakeProfit();
-      // MT4 no tiene ordenes STOP LIMIT: no hay segundo precio que comparar.
-      x.stoplimit=0.0;AddOrd(a,x);
+      string c=OrderGetString(ORDER_COMMENT);if(!OwnerCommentMatch(o,c))continue;
+      OrdRec x;x.ticket=tk;x.symbol=symbol;x.type=(int)t;x.vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
+      x.price=OrderGetDouble(ORDER_PRICE_OPEN);x.sl=OrderGetDouble(ORDER_SL);x.tp=OrderGetDouble(ORDER_TP);
+      x.stoplimit=OrderGetDouble(ORDER_PRICE_STOPLIMIT);AddOrd(a,x);
    }
 }
 bool VolEq(const string ss,double actual,double expected)
 {
-   double step=VolumeStepOf(ss);if(step<=0)step=0.01;
+   double step=SymbolInfoDouble(ss,SYMBOL_VOLUME_STEP);if(step<=0)step=0.01;
    double normalized=ExpectedSlaveVolume(ss,expected,1.0);
    // La tolerancia se expresa en pasos de volumen; el epsilon solo absorbe el
    // ruido de coma flotante cuando la tolerancia configurada es cero.
    double tolerance=MathMax(0,InpVolumeToleranceSteps)*step;
    return MathAbs(actual-normalized)<=tolerance+1e-9;
 }
-double PointOf(const string s){ double p=MarketInfo(s,MODE_POINT); return p>0?p:0.00001; }
+double PointOf(const string s){ double p=SymbolInfoDouble(s,SYMBOL_POINT); return p>0?p:0.00001; }
 // Tolerancias efectivas de un simbolo, ya convertidas a distancia de precio.
 // Un unico valor en puntos para toda la cuenta es o muchisimo o nada cuando
 // conviven oro, indices y divisas, y una tolerancia demasiado estrecha no
@@ -1855,14 +1924,12 @@ bool TradingPermitted(string &reason)
 {
    reason="";
 
-   // IsExpertEnabled es el boton de AutoTrading del terminal; IsTradeAllowed
-   // anade el permiso del propio grafico.
-   if(!IsExpertEnabled() || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
    {
       reason="El terminal Slave tiene el trading automático desactivado.";
       return false;
    }
-   if(!IsTradeAllowed())
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
    {
       reason="Este EA no tiene permiso para operar en el gráfico.";
       return false;
@@ -1879,109 +1946,77 @@ bool TradingPermitted(string &reason)
    }
    return true;
 }
-// MT4 no distingue los modos LONGONLY / SHORTONLY / CLOSEONLY de MT5: solo
-// expone si el simbolo admite operaciones. El resto de casos los rechaza el
-// broker y se informan con el codigo de error.
-bool SymbolAcceptsNewOrders(const string symbol,const int type,string &reason)
-{
-   if(MarketInfo(symbol,MODE_TRADEALLOWED)==0)
-   {
-      reason="El símbolo tiene el trading deshabilitado en el terminal Slave.";
-      return false;
-   }
-   return true;
-}
-double StopsDistance(const string symbol)
-{
-   return MarketInfo(symbol,MODE_STOPLEVEL)*PointOf(symbol);
-}
-// La distancia de congelacion es propia de MT4: dentro de ella el broker
-// rechaza modificar o borrar una pendiente aunque el precio sea valido.
+// Distancia de congelacion del broker. Dentro de ella un modify o un delete
+// se rechazan aunque el precio sea valido. El port MT4 ya lo comprobaba con
+// MODE_FREEZELEVEL; sin el equivalente en MT5, lo que el broker iba a
+// rechazar de todos modos salia como CRITICO en cada ventana en lugar de
+// como BLOQUEADO con su motivo.
 double FreezeDistance(const string symbol)
 {
-   return MarketInfo(symbol,MODE_FREEZELEVEL)*PointOf(symbol);
+   return (double)SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL)*PointOf(symbol);
 }
-bool CurrentPrices(const string symbol,double &bid,double &ask)
-{
-   bid=MarketInfo(symbol,MODE_BID);
-   ask=MarketInfo(symbol,MODE_ASK);
-   return bid>0 && ask>0;
-}
-// Un precio que el broker no puede aceptar produciria un fallo en cada ventana
-// de persistencia. Se detecta antes de enviar nada y se informa como BLOQUEADO.
-bool PendingPriceAcceptable(const string symbol,const int type,const double price,
-                            const double sl,const double tp,const double stoplimit,
-                            string &reason)
+bool PendingNotFrozen(const string symbol,const int type,const double price,string &reason)
 {
    reason="";
 
-   if(price<=0)
+   if(!SymbolIsSynchronized(symbol))
    {
-      reason="El precio de entrada del Master no es válido.";
+      reason="Los datos del símbolo aún no están sincronizados con el servidor.";
       return false;
    }
-   if(IsStopLimitType(type) && stoplimit<=0)
-   {
-      reason="El snapshot del Master no transporta el precio límite de la orden STOP LIMIT.";
-      return false;
-   }
-   // Antes que ninguna distancia: que el precio pertenezca a este mercado.
-   if(!PriceScaleSane(symbol,price,reason))
-      return false;
 
-   double bid=0,ask=0;
-   if(!CurrentPrices(symbol,bid,ask))
+   double freeze=FreezeDistance(symbol);
+   if(freeze<=0) return true;
+
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
    {
       reason="No hay precios actuales del símbolo en el terminal Slave.";
       return false;
    }
 
-   double point=PointOf(symbol);
-   double stops=StopsDistance(symbol);
-   double eps=point*0.5;
-   bool ok=true;
+   double reference=IsBuyPendingType(type) ? tick.ask : tick.bid;
 
-   if(type==CM_TYPE_BUY_LIMIT)
-      ok=(price<=ask-stops+eps);
-   else if(type==CM_TYPE_SELL_LIMIT)
-      ok=(price>=bid+stops-eps);
-   else if(type==CM_TYPE_BUY_STOP || type==CM_TYPE_BUY_STOP_LIMIT)
-      ok=(price>=ask+stops-eps);
-   else
-      ok=(price<=bid-stops+eps);
-
-   if(!ok)
+   if(MathAbs(price-reference)<freeze)
    {
-      reason=StringFormat("El precio de entrada no respeta la distancia mínima del broker (%d puntos).",
-                          (int)MarketInfo(symbol,MODE_STOPLEVEL));
+      reason=StringFormat("La orden está dentro de la distancia de congelación del bróker (%d puntos).",
+                          (int)SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL));
       return false;
-   }
-
-   bool is_buy=IsBuyPendingType(type);
-
-   if(MathAbs(sl)>1e-12)
-   {
-      bool sl_ok=is_buy ? (sl<=price-stops+eps) : (sl>=price+stops-eps);
-      if(!sl_ok)
-      {
-         reason="El Stop Loss del Master queda demasiado cerca del precio de entrada.";
-         return false;
-      }
-   }
-   if(MathAbs(tp)>1e-12)
-   {
-      bool tp_ok=is_buy ? (tp>=price+stops-eps) : (tp<=price-stops+eps);
-      if(!tp_ok)
-      {
-         reason="El Take Profit del Master queda demasiado cerca del precio de entrada.";
-         return false;
-      }
    }
    return true;
 }
-// Antes de modificar o borrar una pendiente hay que comprobar la distancia de
-// congelacion sobre el precio que la orden tiene ahora: dentro de ella el
-// broker rechaza la peticion y reintentarla solo produce ruido.
+bool PositionNotFrozen(const string symbol,const int type,
+                       const double sl,const double tp,string &reason)
+{
+   reason="";
+
+   if(!SymbolIsSynchronized(symbol))
+   {
+      reason="Los datos del símbolo aún no están sincronizados con el servidor.";
+      return false;
+   }
+
+   double freeze=FreezeDistance(symbol);
+   if(freeze<=0) return true;
+
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
+   {
+      reason="No hay precios actuales del símbolo en el terminal Slave.";
+      return false;
+   }
+
+   double reference=(type==POSITION_TYPE_BUY) ? tick.bid : tick.ask;
+
+   if((MathAbs(sl)>1e-12 && MathAbs(sl-reference)<freeze) ||
+      (MathAbs(tp)>1e-12 && MathAbs(tp-reference)<freeze))
+   {
+      reason=StringFormat("El nivel queda dentro de la distancia de congelación del bróker (%d puntos).",
+                          (int)SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL));
+      return false;
+   }
+   return true;
+}
 // Guarda de escala, no de deslizamiento. Una equivalencia de simbolo que
 // apunta a otro instrumento produce diferencias de orden de magnitud, y sin
 // esta comprobacion el EA copiaria literalmente un SL de otro mercado sobre
@@ -1994,14 +2029,14 @@ bool PriceScaleSane(const string symbol,const double master_price,string &reason
    if(InpMaxPriceDeviationPercent<=0 || master_price<=0)
       return true;
 
-   double bid=0,ask=0;
-   if(!CurrentPrices(symbol,bid,ask))
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
    {
       reason="No hay precios actuales del símbolo en el terminal Slave.";
       return false;
    }
 
-   double mid=(ask+bid)/2.0;
+   double mid=(tick.ask+tick.bid)/2.0;
    if(mid<=0) return true;
 
    double deviation=MathAbs(master_price-mid)/mid*100.0;
@@ -2065,10 +2100,42 @@ bool RegisterAutoActionAnd(const string channel,const bool result)
    RegisterAutoAction(channel);
    return result;
 }
+
+void InvalidateChannelTrust(const string channel)
+{
+   int i=ChannelStateIndex(channel);
+   if(i<0) return;
+   g_channel_state[i].trusted_since=0;
+   g_channel_state[i].empty_ord_since=0;
+   g_channel_state[i].last_written=0;
+}
+
+void InvalidateAllChannelTrust()
+{
+   for(int i=0;i<ArraySize(g_channel_state);i++)
+   {
+      g_channel_state[i].trusted_since=0;
+      g_channel_state[i].empty_ord_since=0;
+      g_channel_state[i].last_written=0;
+   }
+}
+
+bool ChannelRecoveryConfirmed(const string channel)
+{
+   int i=ChannelStateIndex(channel);
+   if(i<0) return false;
+
+   datetime now=TimeLocal();
+   if(g_channel_state[i].trusted_since==0)
+      g_channel_state[i].trusted_since=now;
+
+   return (now-g_channel_state[i].trusted_since)>=InpLinkRecoverySeconds;
+}
 // Refresca el estado del canal con el snapshot recien leido. Aqui vive la
 // unica forma que tiene el Slave de notar que el Master acaba de arrancar:
 // la marca de escritura salta hacia atras. Un Master que arranca con otra
-// configuracion publica un snapshot valido y fresco con cero pendientes, que
+// configuracion -otro filtro de simbolos, otro comentario, otra cuenta con el
+// mismo canal- publica un snapshot valido y fresco con cero pendientes, que
 // es indistinguible de un Master que de verdad no tiene ninguna.
 void TrackChannelSnapshot(const string channel,const Snap &snap)
 {
@@ -2108,28 +2175,107 @@ int MasterEmptyPendingSeconds(const string channel)
    int left=InpEmptyMasterConfirmSeconds-elapsed;
    return left>0 ? left : 0;
 }
-bool PendingNotFrozen(const string symbol,const int type,const double current_price,
-                      string &reason)
+bool SymbolAcceptsNewOrders(const string symbol,const int type,string &reason)
+{
+   if(!SymbolIsSynchronized(symbol))
+   {
+      reason="Los datos del símbolo aún no están sincronizados con el servidor.";
+      return false;
+   }
+
+   long mode=SymbolInfoInteger(symbol,SYMBOL_TRADE_MODE);
+
+   if(mode==SYMBOL_TRADE_MODE_DISABLED)
+   {
+      reason="El símbolo tiene el trading deshabilitado en el terminal Slave.";
+      return false;
+   }
+   if(mode==SYMBOL_TRADE_MODE_CLOSEONLY)
+   {
+      reason="El símbolo sólo admite cierres en el terminal Slave.";
+      return false;
+   }
+   if(IsBuyPendingType(type) && mode==SYMBOL_TRADE_MODE_SHORTONLY)
+   {
+      reason="El símbolo sólo admite operaciones de venta.";
+      return false;
+   }
+   if(!IsBuyPendingType(type) && mode==SYMBOL_TRADE_MODE_LONGONLY)
+   {
+      reason="El símbolo sólo admite operaciones de compra.";
+      return false;
+   }
+   return true;
+}
+// Un precio que el broker no puede aceptar produciria un fallo en cada ventana
+// de persistencia. Se detecta antes de enviar nada y se informa como BLOQUEADO.
+bool PendingPriceAcceptable(const string symbol,const int type,const double price,
+                            const double sl,const double tp,const double stoplimit,
+                            string &reason)
 {
    reason="";
 
-   double freeze=FreezeDistance(symbol);
-   if(freeze<=0) return true;
+   if(price<=0)
+   {
+      reason="El precio de entrada del Master no es válido.";
+      return false;
+   }
+   if(IsStopLimitType(type) && stoplimit<=0)
+   {
+      reason="El snapshot del Master no transporta el precio límite de la orden STOP LIMIT.";
+      return false;
+   }
+   // Antes que ninguna distancia: que el precio pertenezca a este mercado.
+   if(!PriceScaleSane(symbol,price,reason))
+      return false;
 
-   double bid=0,ask=0;
-   if(!CurrentPrices(symbol,bid,ask))
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
    {
       reason="No hay precios actuales del símbolo en el terminal Slave.";
       return false;
    }
 
-   double reference=IsBuyPendingType(type) ? ask : bid;
+   double point=PointOf(symbol);
+   double stops=(double)SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL)*point;
+   double eps=point*0.5;
+   bool ok=true;
 
-   if(MathAbs(current_price-reference)<freeze)
+   if(type==ORDER_TYPE_BUY_LIMIT)
+      ok=(price<=tick.ask-stops+eps);
+   else if(type==ORDER_TYPE_SELL_LIMIT)
+      ok=(price>=tick.bid+stops-eps);
+   else if(type==ORDER_TYPE_BUY_STOP || type==ORDER_TYPE_BUY_STOP_LIMIT)
+      ok=(price>=tick.ask+stops-eps);
+   else
+      ok=(price<=tick.bid-stops+eps);
+
+   if(!ok)
    {
-      reason=StringFormat("La orden pendiente está dentro de la distancia de congelación del broker (%d puntos).",
-                          (int)MarketInfo(symbol,MODE_FREEZELEVEL));
+      reason=StringFormat("El precio de entrada no respeta la distancia mínima del broker (%d puntos).",
+                          (int)SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL));
       return false;
+   }
+
+   bool is_buy=IsBuyPendingType(type);
+
+   if(MathAbs(sl)>1e-12)
+   {
+      bool sl_ok=is_buy ? (sl<=price-stops+eps) : (sl>=price+stops-eps);
+      if(!sl_ok)
+      {
+         reason="El Stop Loss del Master queda demasiado cerca del precio de entrada.";
+         return false;
+      }
+   }
+   if(MathAbs(tp)>1e-12)
+   {
+      bool tp_ok=is_buy ? (tp>=price+stops-eps) : (tp<=price-stops+eps);
+      if(!tp_ok)
+      {
+         reason="El Take Profit del Master queda demasiado cerca del precio de entrada.";
+         return false;
+      }
    }
    return true;
 }
@@ -2145,21 +2291,21 @@ bool PositionStopsAcceptable(const string symbol,const int type,
    if(MathAbs(tp)>1e-12 && !PriceScaleSane(symbol,tp,reason))
       return false;
 
-   double bid=0,ask=0;
-   if(!CurrentPrices(symbol,bid,ask))
+   MqlTick tick;
+   if(!SymbolInfoTick(symbol,tick) || tick.ask<=0 || tick.bid<=0)
    {
       reason="No hay precios actuales del símbolo en el terminal Slave.";
       return false;
    }
 
    double point=PointOf(symbol);
-   double stops=StopsDistance(symbol);
+   double stops=(double)SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL)*point;
    double eps=point*0.5;
-   bool is_buy=(type==CM_TYPE_BUY);
+   bool is_buy=(type==POSITION_TYPE_BUY);
 
    if(MathAbs(sl)>1e-12)
    {
-      bool sl_ok=is_buy ? (sl<=bid-stops+eps) : (sl>=ask+stops-eps);
+      bool sl_ok=is_buy ? (sl<=tick.bid-stops+eps) : (sl>=tick.ask+stops-eps);
       if(!sl_ok)
       {
          reason="El Stop Loss del Master queda dentro de la distancia mínima del broker.";
@@ -2168,7 +2314,7 @@ bool PositionStopsAcceptable(const string symbol,const int type,
    }
    if(MathAbs(tp)>1e-12)
    {
-      bool tp_ok=is_buy ? (tp>=ask+stops-eps) : (tp<=bid-stops+eps);
+      bool tp_ok=is_buy ? (tp>=tick.ask+stops-eps) : (tp<=tick.bid-stops+eps);
       if(!tp_ok)
       {
          reason="El Take Profit del Master queda dentro de la distancia mínima del broker.";
@@ -2229,26 +2375,20 @@ void ClearMarketWait(const string problem_key)
    MarketWaitRemove(problem_key);
    ClearAlert("PWAIT|"+problem_key);
 }
-// Equivalente MT4 de TRADE_RETCODE_MARKET_CLOSED, TRADE_DISABLED y PRICE_OFF.
-bool TradeErrorIsMarketClosed(const int code)
+bool TradeRetcodeIsMarketClosed(const uint code)
 {
-   return code==CM_ERR_MARKET_CLOSED ||
-          code==CM_ERR_TRADE_DISABLED ||
-          code==CM_ERR_OFF_QUOTES;
-}
-bool LastTradeWasMarketClosed()
-{
-   return TradeErrorIsMarketClosed(g_last_trade_error);
+   return code==TRADE_RETCODE_MARKET_CLOSED ||
+          code==TRADE_RETCODE_TRADE_DISABLED ||
+          code==TRADE_RETCODE_PRICE_OFF;
 }
 // Las sesiones se declaran por día del servidor. Un símbolo sin sesiones
-// declaradas se da por abierto y se delega en el error del bróker: bloquear
+// declaradas se da por abierto y se delega en el retcode del bróker: bloquear
 // por una heurística de cotizaciones dejaría sin corregir un instrumento poco
-// líquido durante su propia sesión. MT4 no tiene TimeTradeServer, así que la
-// referencia es TimeCurrent(), la hora del servidor de la última cotización.
+// líquido durante su propia sesión.
 bool SymbolSessionOpen(const string symbol)
 {
    MqlDateTime st;
-   TimeToStruct(TimeCurrent(),st);
+   TimeToStruct(TimeTradeServer(),st);
 
    ENUM_DAY_OF_WEEK day=(ENUM_DAY_OF_WEEK)st.day_of_week;
    int now_seconds=st.hour*3600+st.min*60+st.sec;
@@ -2273,63 +2413,6 @@ void MarketClosedNotice(const Snap &snap,const string problem_key,
       AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
       "\n\nACCIÓN:\nEl mercado de "+symbol+" está cerrado en la cuenta Slave."+
       "\nCopyMonitor reintentará la corrección cuando abra la sesión.");
-}
-
-//---------------- trade result helpers ----------------
-string TradeErrorText(const int code)
-{
-   switch(code)
-   {
-      case 0:                          return "sin error";
-      case CM_ERR_NO_RESULT:           return "sin cambios: los valores pedidos ya estaban puestos";
-      case CM_ERR_COMMON_ERROR:        return "error común";
-      case CM_ERR_INVALID_TRADE_PARAM: return "parámetros de la operación no válidos";
-      case CM_ERR_SERVER_BUSY:         return "servidor de trading ocupado";
-      case CM_ERR_NO_CONNECTION:       return "sin conexión con el servidor";
-      case CM_ERR_TOO_FREQUENT:        return "peticiones demasiado frecuentes";
-      case CM_ERR_ACCOUNT_DISABLED:    return "cuenta deshabilitada";
-      case CM_ERR_INVALID_ACCOUNT:     return "número de cuenta no válido";
-      case CM_ERR_TRADE_TIMEOUT:       return "tiempo de espera de la operación agotado";
-      case CM_ERR_INVALID_PRICE:       return "precio no válido";
-      case CM_ERR_INVALID_STOPS:       return "stops no válidos para este símbolo";
-      case CM_ERR_INVALID_VOLUME:      return "volumen no válido";
-      case CM_ERR_MARKET_CLOSED:       return "mercado cerrado";
-      case CM_ERR_TRADE_DISABLED:      return "trading deshabilitado";
-      case CM_ERR_NOT_ENOUGH_MONEY:    return "margen insuficiente";
-      case CM_ERR_PRICE_CHANGED:       return "el precio cambió";
-      case CM_ERR_OFF_QUOTES:          return "sin cotizaciones";
-      case CM_ERR_BROKER_BUSY:         return "bróker ocupado";
-      case CM_ERR_REQUOTE:             return "recotización";
-      case CM_ERR_ORDER_LOCKED:        return "orden bloqueada";
-      case CM_ERR_LONG_ONLY:           return "el símbolo sólo admite posiciones largas";
-      case CM_ERR_TOO_MANY_REQUESTS:   return "demasiadas peticiones";
-      case CM_ERR_TRADE_MODIFY_DENIED: return "modificación denegada: la orden está demasiado cerca del mercado";
-      case CM_ERR_TRADE_CONTEXT_BUSY:  return "contexto de trading ocupado";
-      case CM_ERR_EXPIRATION_DENIED:   return "el bróker no admite caducidad en las órdenes";
-      case CM_ERR_TOO_MANY_ORDERS:     return "demasiadas órdenes abiertas";
-      case CM_ERR_HEDGE_PROHIBITED:    return "la cobertura está prohibida en esta cuenta";
-      case CM_ERR_FIFO_PROHIBITED:     return "la regla FIFO prohíbe la operación";
-      case CM_ERR_INVALID_TICKET:      return "ticket no válido";
-   }
-   return "error "+IntegerToString(code)+" del terminal";
-}
-string TradeFailureDetails()
-{
-   return "\nError MT4: "+IntegerToString(g_last_trade_error)+
-          "\nDetalle: "+TradeErrorText(g_last_trade_error);
-}
-// OrderModify devuelve false con ERR_NO_RESULT cuando los valores pedidos ya
-// son los que tiene la orden. Eso es el equivalente de TRADE_RETCODE_NO_CHANGES
-// de MT5 y cuenta como exito.
-bool TradeOk(const bool sent)
-{
-   if(sent)
-   {
-      g_last_trade_error=0;
-      return true;
-   }
-   g_last_trade_error=GetLastError();
-   return g_last_trade_error==CM_ERR_NO_RESULT;
 }
 
 //---------------- open matching ----------------
@@ -2476,7 +2559,8 @@ int MatchPosByPrice(const Owner &o,const PosRec &m,const PosRec &sp[],const bool
 // emparejar de verdad: un cierre parcial en el Master, un llenado parcial de
 // la copia o un redondeo distinto del copiador rompen VolEq, y entonces el
 // Slave denunciaba "falta la copia de una posición activa" mientras la copia
-// estaba delante, con otro tamaño.
+// estaba delante, con otro tamaño. Lo que el usuario necesita leer es cuál es
+// cada volumen.
 bool PosCompatibleIgnoringVolume(const Owner &o,const PosRec &m,const PosRec &s)
 {
    if(!SymbolEq(o.channel,m.symbol,s.symbol))return false;
@@ -2485,7 +2569,8 @@ bool PosCompatibleIgnoringVolume(const Owner &o,const PosRec &m,const PosRec &s)
    return true;
 }
 // Como MatchPosByPrice, pero sobre las candidatas que solo difieren en el
-// volumen. El llamador solo puede aceptar el resultado cuando tied==1.
+// volumen. El llamador solo puede aceptar el resultado cuando tied==1: dos
+// candidatas igual de buenas siguen sin aportar identidad.
 int MatchPosIgnoringVolume(const Owner &o,const PosRec &m,const PosRec &sp[],
                            const bool &su[],int &tied)
 {
@@ -2523,52 +2608,6 @@ void MarkPosPriceTies(const Owner &o,const PosRec &m,const PosRec &sp[],
       if(!used[j] && PosCompatible(o,m,sp[j]) &&
          PosCost(m,sp[j])<=best_cost+CM_MATCH_EPS)
          marked[j]=true;
-}
-int CandIndex(const string key)
-{
-   for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].key==key)return i;
-   return -1;
-}
-bool ConfirmProblem(const string key,const int seconds)
-{
-   datetime now=TimeLocal();int i=CandIndex(key);
-   if(i<0)
-   {
-      i=ArraySize(g_candidates);ArrayResize(g_candidates,i+1);
-      g_candidates[i].key=key;g_candidates[i].first_seen=now;g_candidates[i].last_seen=now;
-      return seconds<=0;
-   }
-   g_candidates[i].last_seen=now;
-   return (now-g_candidates[i].first_seen)>=seconds;
-}
-void RemoveProblem(const string key)
-{
-   int i=CandIndex(key);if(i<0)return;int n=ArraySize(g_candidates);
-   for(int j=i;j<n-1;j++)g_candidates[j]=g_candidates[j+1];ArrayResize(g_candidates,n-1);
-}
-// MT4 exige repetir el precio de apertura al modificar una posicion, y la
-// caducidad debe ir a cero o el broker rechaza la peticion.
-bool FixPositionStops(const long ticket,const double sl,const double tp)
-{
-   // Un abandono antes de enviar nada no puede dejar en pie el codigo de error
-   // de una correccion anterior: la rama de mercado cerrado lo leeria como si
-   // fuera de este intento.
-   g_last_trade_error=0;
-
-   if(!SelectLivePosition(ticket)) return false;
-
-   string symbol=OrderSymbol();
-   double open_price=OrderOpenPrice();
-
-   ResetLastError();
-   if(!TradeOk(OrderModify((int)ticket,open_price,NormPrice(symbol,sl),
-                           NormPrice(symbol,tp),0,clrNONE)))
-      return false;
-
-   if(!SelectLivePosition(ticket)) return false;
-   double tol=StopTolPrice(symbol);
-   return StopEq(OrderStopLoss(),sl,tol) &&
-          StopEq(OrderTakeProfit(),tp,tol);
 }
 void CheckOpen(const Owner &o,const Snap &snap)
 {
@@ -2642,8 +2681,8 @@ void CheckOpen(const Owner &o,const Snap &snap)
       {
          // El usuario dejó de vigilar este ticket: ningún RESUELTO sería
          // cierto, así que los avisos se retiran en silencio.
-         ClearAlert("POSMISS|"+o.channel+"|"+TicketText(snap.pos[i].ticket));
-         ClearAlert("POSAMB|"+o.channel+"|"+TicketText(snap.pos[i].ticket));
+         ClearAlert("POSMISS|"+o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket));
+         ClearAlert("POSAMB|"+o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket));
          continue;
       }
 
@@ -2657,10 +2696,11 @@ void CheckOpen(const Owner &o,const Snap &snap)
       // Con una sola clave agrupada por canal el RESUELTO sólo podía salir
       // cuando desaparecían todos los problemas a la vez, así que la copia
       // que llegaba tarde se avisaba y su RESUELTO no se enviaba nunca.
-      string pos_suffix=o.channel+"|"+TicketText(snap.pos[i].ticket);
+      string pos_suffix=o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket);
       string miss_key="POSMISS|"+pos_suffix;
       string amb_key="POSAMB|"+pos_suffix;
-      string master_line="Ticket Master: "+TicketText(snap.pos[i].ticket);
+      string master_line="Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket);
+      string slave_symbol_expected=ExpectedSlaveSymbol(o.channel,snap.pos[i].symbol);
 
       if(tied>1)
       {
@@ -2696,13 +2736,13 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
       // El volumen vuelve a ser el esperado: si se avisó de lo contrario, eso
       // se cierra aquí, con la misma pareja de tickets con la que se abrió.
-      ResolveAlert("POSVOL|"+pos_suffix+"|"+TicketText(sp[best].ticket),
+      ResolveAlert("POSVOL|"+pos_suffix+"|"+StringFormat("%I64u",sp[best].ticket),
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
          "\n\nPROBLEMA RESUELTO:\nEl volumen de la copia vuelve a ser el esperado.\n\n"+
          "Estado: POSICIÓN ACTIVA\n"+
          "Símbolo: "+sp[best].symbol+"\n"+
          master_line+"\n"+
-         "Ticket Slave: "+TicketText(sp[best].ticket)+"\n"+
+         "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n"+
          "Volumen Slave: "+VolumeText(sp[best].symbol,sp[best].vol));
 
       // La copia existe y es la única compatible: eso cierra tanto el aviso
@@ -2715,7 +2755,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
          "Símbolo Master: "+snap.pos[i].symbol+"\n"+
          "Símbolo Slave: "+sp[best].symbol+"\n"+
          master_line+"\n"+
-         "Ticket Slave: "+TicketText(sp[best].ticket)+"\n\n"+
+         "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n\n"+
          "Volumen Slave: "+VolumeText(sp[best].symbol,sp[best].vol)+"\n"+
          "Precio de entrada: "+PriceText(sp[best].price));
       ResolveAlert(amb_key,
@@ -2724,15 +2764,15 @@ void CheckOpen(const Owner &o,const Snap &snap)
          "Estado: POSICIÓN ACTIVA\n"+
          "Símbolo Master: "+snap.pos[i].symbol+"\n"+
          master_line+"\n"+
-         "Ticket Slave: "+TicketText(sp[best].ticket));
+         "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket));
 
       double tol=StopTolPrice(sp[best].symbol);
 
       bool sl_bad=InpCheckStopLoss && !StopEq(snap.pos[i].sl,sp[best].sl,tol);
       bool tp_bad=InpCheckTakeProfit && !StopEq(snap.pos[i].tp,sp[best].tp,tol);
 
-      string suffix=o.channel+"|"+TicketText(snap.pos[i].ticket)+
-                    "|"+TicketText(sp[best].ticket);
+      string suffix=o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket)+
+                    "|"+StringFormat("%I64u",sp[best].ticket);
       string alert_key="SLTP|"+suffix;
       string fix_key="FIXSLTP|"+suffix;
 
@@ -2743,8 +2783,8 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Estado: POSICIÓN ACTIVA\n"+
             "Tipo: "+PositionTypeText(snap.pos[i].type)+"\n"+
             "Símbolo: "+sp[best].symbol+"\n"+
-            "Ticket Master: "+TicketText(snap.pos[i].ticket)+"\n"+
-            "Ticket Slave: "+TicketText(sp[best].ticket)+"\n";
+            "Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+"\n"+
+            "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n";
 
          if(sl_bad)
             problem_detail+=
@@ -2765,7 +2805,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
          else
             PersistAlert(alert_key,alert);
 
-         if(InpAutoFixPositionSLTP && !g_trade_busy &&
+         if(InpAutoFixPositionSLTP &&
             ConfirmProblem(fix_key,InpAutoFixPersistSeconds) &&
             MarketWaitDue(fix_key))
          {
@@ -2785,6 +2825,8 @@ void CheckOpen(const Owner &o,const Snap &snap)
             }
             else if(!PositionStopsAcceptable(sp[best].symbol,sp[best].type,
                                              target_sl,target_tp,blocked_reason) ||
+                    !PositionNotFrozen(sp[best].symbol,sp[best].type,
+                                       target_sl,target_tp,blocked_reason) ||
                     !AutoActionAllowed(o.channel,blocked_reason))
             {
                PersistAlert("PBLOCK|"+fix_key,
@@ -2803,7 +2845,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
             }
             // El bróker puede rechazar por sesión cerrada aunque el calendario
             // la declare abierta, por ejemplo en un festivo.
-            else if(LastTradeWasMarketClosed())
+            else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
             {
                MarketClosedNotice(snap,fix_key,problem_detail,sp[best].symbol);
                RemoveProblem(fix_key);
@@ -2826,8 +2868,8 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "\n\nPROBLEMA RESUELTO:\nLos valores SL y TP de la posición ya coinciden."+
             "\n\nEstado: POSICIÓN ACTIVA\nTipo: "+PositionTypeText(snap.pos[i].type)+
             "\nSímbolo: "+sp[best].symbol+
-            "\nTicket Master: "+TicketText(snap.pos[i].ticket)+
-            "\nTicket Slave: "+TicketText(sp[best].ticket));
+            "\nTicket Master: "+StringFormat("%I64u",snap.pos[i].ticket)+
+            "\nTicket Slave: "+StringFormat("%I64u",sp[best].ticket));
          ClearAlert("FAIL|"+alert_key);
          ClearAlert("PBLOCK|"+fix_key);
          RemoveProblem(fix_key);
@@ -2844,21 +2886,23 @@ void CheckOpen(const Owner &o,const Snap &snap)
       if(!deferred[i])
          continue;
 
-      string pos_suffix=o.channel+"|"+TicketText(snap.pos[i].ticket);
+      string pos_suffix=o.channel+"|"+StringFormat("%I64u",snap.pos[i].ticket);
       string miss_key="POSMISS|"+pos_suffix;
       string amb_key="POSAMB|"+pos_suffix;
-      string master_line="Ticket Master: "+TicketText(snap.pos[i].ticket);
+      string master_line="Ticket Master: "+StringFormat("%I64u",snap.pos[i].ticket);
+      string slave_symbol_expected=ExpectedSlaveSymbol(o.channel,snap.pos[i].symbol);
 
       int vol_tied=0;
       int vol_match=MatchPosIgnoringVolume(o,snap.pos[i],sp,su,vol_tied);
 
       if(vol_match>=0 && vol_tied==1)
       {
-         double vol_expected=ExpectedSlaveVolume(sp[vol_match].symbol,
-                                                 snap.pos[i].vol,o.mult);
+         double expected_volume=ExpectedSlaveVolume(sp[vol_match].symbol,
+                                                    snap.pos[i].vol,o.mult);
          su[vol_match]=true;
 
-         PersistAlert("POSVOL|"+pos_suffix+"|"+TicketText(sp[vol_match].ticket),
+         PersistAlert("POSVOL|"+pos_suffix+"|"+
+                      StringFormat("%I64u",sp[vol_match].ticket),
             AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nLa copia de una posición activa tiene un volumen distinto.\n\n"+
             "Estado: POSICIÓN ACTIVA\n"+
@@ -2866,9 +2910,9 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Símbolo Master: "+snap.pos[i].symbol+"\n"+
             "Símbolo Slave: "+sp[vol_match].symbol+"\n"+
             master_line+"\n"+
-            "Ticket Slave: "+TicketText(sp[vol_match].ticket)+"\n\n"+
+            "Ticket Slave: "+StringFormat("%I64u",sp[vol_match].ticket)+"\n\n"+
             "Volumen Master: "+VolumeText(sp[vol_match].symbol,snap.pos[i].vol)+"\n"+
-            "Volumen Slave esperado: "+VolumeText(sp[vol_match].symbol,vol_expected)+"\n"+
+            "Volumen Slave esperado: "+VolumeText(sp[vol_match].symbol,expected_volume)+"\n"+
             "Volumen Slave real: "+VolumeText(sp[vol_match].symbol,sp[vol_match].vol)+"\n"+
             "Precio de entrada Master: "+PriceText(snap.pos[i].price)+"\n"+
             "Precio de entrada Slave: "+PriceText(sp[vol_match].price)+
@@ -2889,7 +2933,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
          continue;
       }
 
-      string slave_symbol=ExpectedSlaveSymbol(o.channel,snap.pos[i].symbol);
+      string slave_symbol=slave_symbol_expected;
       double expected_volume=ExpectedSlaveVolume(slave_symbol,snap.pos[i].vol,o.mult);
       PersistAlert(miss_key,
          AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
@@ -2920,7 +2964,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
    // Master-ticket copies.
    for(int j=0;j<ArraySize(sp);j++)
    {
-      string extra_key="POSEXTRA|"+o.channel+"|"+TicketText(sp[j].ticket);
+      string extra_key="POSEXTRA|"+o.channel+"|"+StringFormat("%I64u",sp[j].ticket);
       bool unpaired=(!su[j] && !ambiguous_slave[j]);
 
       // CheckPending las necesita aunque el perfil no avise de posiciones
@@ -2940,7 +2984,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
             "Estado: POSICIÓN ACTIVA\n"+
             "Tipo: "+PositionTypeText(sp[j].type)+"\n"+
             "Símbolo: "+sp[j].symbol+"\n"+
-            "Ticket Slave: "+TicketText(sp[j].ticket));
+            "Ticket Slave: "+StringFormat("%I64u",sp[j].ticket));
          continue;
       }
 
@@ -2950,7 +2994,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
          "Estado: POSICIÓN ACTIVA\n"+
          "Tipo: "+PositionTypeText(sp[j].type)+"\n"+
          "Símbolo: "+sp[j].symbol+"\n"+
-         "Ticket Slave: "+TicketText(sp[j].ticket)+"\n"+
+         "Ticket Slave: "+StringFormat("%I64u",sp[j].ticket)+"\n"+
          "Volumen Slave: "+VolumeText(sp[j].symbol,sp[j].vol)+"\n"+
          "Precio de entrada: "+PriceText(sp[j].price)+"\n"+
          "Stop Loss: "+StopText(sp[j].sl,"SIN SL")+"\n"+
@@ -2958,7 +3002,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
          PositionReviewAction());
    }
 
-   // Clave agrupada de las versiones anteriores a la v1.01: se retira en
+   // Clave agrupada de las versiones anteriores a la v1.21: se retira en
    // silencio para que un estado persistido no quede activo para siempre.
    ClearAlert("OPEN|"+o.channel);
 }
@@ -2973,8 +3017,8 @@ bool OrdCompatible(const Owner &o,const OrdRec &m,const OrdRec &s)
 }
 bool IsSellPendingType(const int t)
 {
-   return t==CM_TYPE_SELL_LIMIT || t==CM_TYPE_SELL_STOP ||
-          t==CM_TYPE_SELL_STOP_LIMIT;
+   return t==ORDER_TYPE_SELL_LIMIT || t==ORDER_TYPE_SELL_STOP ||
+          t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 // Una copia que se activa antes que su Master deja de ser pendiente en el
 // Slave y pasa a ser posicion. El Master sigue publicando la pendiente, asi
@@ -2988,7 +3032,7 @@ bool PendingCouldBePosition(const Owner &o,const OrdRec &m,const PosRec &s,
 {
    bool buy=IsBuyPendingType(m.type);
    if(!buy && !IsSellPendingType(m.type)) return false;
-   if(s.type!=(buy ? CM_TYPE_BUY : CM_TYPE_SELL)) return false;
+   if(s.type!=(buy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL)) return false;
    if(!SymbolEq(o.channel,m.symbol,s.symbol)) return false;
    // El volumen deja de exigirse en la segunda pasada: una activacion que se
    // llena parcialmente, o una copia abierta con otro tamaño, sigue siendo
@@ -3148,6 +3192,7 @@ int MatchOrdByPrice(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool
 // copiador que dimensiona por riesgo en vez de por multiplicador fijo- dejaba
 // de ser compatible, la orden Master contaba como no emparejada y la creación
 // automática añadía una SEGUNDA pendiente mientras la primera seguía viva.
+// Dos órdenes donde debía haber una, creadas por el propio monitor.
 bool OrdCompatibleIgnoringVolume(const Owner &o,const OrdRec &m,const OrdRec &s)
 {
    if(!SymbolEq(o.channel,m.symbol,s.symbol))return false;
@@ -3192,6 +3237,28 @@ void MarkOrdPriceTies(const Owner &o,const OrdRec &m,const OrdRec &so[],
          MathAbs(m.price-so[s].price)<=best_delta+CM_MATCH_EPS)
          marked[s]=true;
 }
+int CandIndex(const string key)
+{
+   for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].key==key)return i;
+   return -1;
+}
+bool ConfirmProblem(const string key,const int seconds)
+{
+   datetime now=TimeLocal();int i=CandIndex(key);
+   if(i<0)
+   {
+      i=ArraySize(g_candidates);ArrayResize(g_candidates,i+1);
+      g_candidates[i].key=key;g_candidates[i].first_seen=now;g_candidates[i].last_seen=now;
+      return seconds<=0;
+   }
+   g_candidates[i].last_seen=now;
+   return (now-g_candidates[i].first_seen)>=seconds;
+}
+void RemoveProblem(const string key)
+{
+   int i=CandIndex(key);if(i<0)return;int n=ArraySize(g_candidates);
+   for(int j=i;j<n-1;j++)g_candidates[j]=g_candidates[j+1];ArrayResize(g_candidates,n-1);
+}
 int BlockedIndex(const string key)
 {
    for(int i=0;i<ArraySize(g_create_blocked);i++)if(g_create_blocked[i].key==key)return i;
@@ -3217,37 +3284,85 @@ void UnblockCreate(const string key)
    int i=BlockedIndex(key);if(i<0)return;int n=ArraySize(g_create_blocked);
    for(int j=i;j<n-1;j++)g_create_blocked[j]=g_create_blocked[j+1];ArrayResize(g_create_blocked,n-1);
 }
-bool StillOwnedPending(const Owner &o,const long tk,OrdRec &x)
+bool StillOwnedPending(const Owner &o,ulong tk,OrdRec &x)
 {
-   if(!SelectLivePending(tk))return false;
-   string symbol=OrderSymbol();
+   if(!OrderSelect(tk))return false;
+   ENUM_ORDER_TYPE t=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);if(!IsPending(t))return false;
+   string symbol=OrderGetString(ORDER_SYMBOL);
    if(!SlaveSymbolAllowed(symbol))return false;
-   if(!OwnerCommentMatch(o,OrderComment()))return false;
-   x.ticket=tk;x.symbol=symbol;x.type=OrderType();x.vol=OrderLots();
-   x.price=OrderOpenPrice();x.sl=OrderStopLoss();x.tp=OrderTakeProfit();
-   x.stoplimit=0.0;return true;
+   if(!OwnerCommentMatch(o,OrderGetString(ORDER_COMMENT)))return false;
+   x.ticket=tk;x.symbol=symbol;x.type=(int)t;x.vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
+   x.price=OrderGetDouble(ORDER_PRICE_OPEN);x.sl=OrderGetDouble(ORDER_SL);x.tp=OrderGetDouble(ORDER_TP);
+   x.stoplimit=OrderGetDouble(ORDER_PRICE_STOPLIMIT);return true;
 }
-// MT4 sólo tiene los cuatro tipos pendientes clásicos. Una STOP LIMIT publicada
-// por un Master MT5 no se puede reproducir aquí y queda BLOQUEADO.
-bool CreatablePendingType(const int type)
+bool TradeRequestSucceeded(const bool sent)
 {
-   return type==CM_TYPE_BUY_LIMIT || type==CM_TYPE_SELL_LIMIT ||
-          type==CM_TYPE_BUY_STOP  || type==CM_TYPE_SELL_STOP;
+   if(!sent) return false;
+   uint code=g_trade.ResultRetcode();
+   return code==TRADE_RETCODE_DONE || code==TRADE_RETCODE_PLACED ||
+          code==TRADE_RETCODE_DONE_PARTIAL || code==TRADE_RETCODE_NO_CHANGES;
 }
-// El ticket devuelto por OrderSend, o -1. El magic queda en cero: la propiedad
-// de una copia se decide por el comentario, igual que en el Slave MT5.
-long SendPendingOrder(const Owner &o,const OrdRec &master,const string symbol,
-                      const double volume)
+bool TradeRetcodeIndeterminate(const uint code)
+{
+   return code==TRADE_RETCODE_TIMEOUT ||
+          code==TRADE_RETCODE_CONNECTION ||
+          code==TRADE_RETCODE_ERROR;
+}
+string TradeFailureDetails()
+{
+   return "\nRetcode: "+IntegerToString((int)g_trade.ResultRetcode())+
+          "\nDetalle: "+g_trade.ResultRetcodeDescription()+
+          "\nError MQL: "+IntegerToString(GetLastError());
+}
+bool FixPositionStops(const ulong ticket,const double sl,const double tp)
 {
    ResetLastError();
-   int ticket=OrderSend(symbol,master.type,volume,NormPrice(symbol,master.price),0,
-                        NormPrice(symbol,master.sl),NormPrice(symbol,master.tp),
-                        o.comment,0,0,clrNONE);
-
-   g_last_trade_error=(ticket>0)?0:GetLastError();
-   return (long)ticket;
+   if(!TradeRequestSucceeded(g_trade.PositionModify(ticket,sl,tp))) return false;
+   if(!PositionSelectByTicket(ticket)) return false;
+   string symbol=PositionGetString(POSITION_SYMBOL);
+   double tol=StopTolPrice(symbol);
+   return StopEq(PositionGetDouble(POSITION_SL),sl,tol) &&
+          StopEq(PositionGetDouble(POSITION_TP),tp,tol);
 }
-int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,string &blocked_reason)
+bool CreatablePendingType(const int type)
+{
+   return type==ORDER_TYPE_BUY_LIMIT || type==ORDER_TYPE_SELL_LIMIT ||
+          type==ORDER_TYPE_BUY_STOP  || type==ORDER_TYPE_SELL_STOP ||
+          type==ORDER_TYPE_BUY_STOP_LIMIT || type==ORDER_TYPE_SELL_STOP_LIMIT;
+}
+bool SendPendingOrder(const Owner &o,const OrdRec &master,const string symbol,
+                      const double volume)
+{
+   if(master.type==ORDER_TYPE_BUY_LIMIT)
+      return g_trade.BuyLimit(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   if(master.type==ORDER_TYPE_SELL_LIMIT)
+      return g_trade.SellLimit(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   if(master.type==ORDER_TYPE_BUY_STOP)
+      return g_trade.BuyStop(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   if(master.type==ORDER_TYPE_SELL_STOP)
+      return g_trade.SellStop(volume,master.price,symbol,master.sl,master.tp,ORDER_TIME_GTC,0,o.comment);
+   // STOP LIMIT: el esquema 3 transporta el precio limite, asi que la copia ya
+   // se puede reproducir con los dos precios.
+   return g_trade.OrderOpen(symbol,(ENUM_ORDER_TYPE)master.type,volume,
+                            master.stoplimit,master.price,master.sl,master.tp,
+                            ORDER_TIME_GTC,0,o.comment);
+}
+bool FindUniqueOwnedPending(const Owner &o,const OrdRec &master,ulong &ticket)
+{
+   ticket=0;
+   OrdRec orders[];
+   SlaveOrdForOwner(o,orders);
+   int matches=0;
+
+   for(int i=0;i<ArraySize(orders);i++)
+   {
+      if(!OrdCompatible(o,master,orders[i])) continue;
+      matches++;
+      ticket=orders[i].ticket;
+   }
+   return matches==1;
+}
+int CreatePendingCopy(const Owner &o,const OrdRec &master,ulong &created_ticket,string &blocked_reason)
 {
    created_ticket=0;
    blocked_reason="";
@@ -3260,14 +3375,14 @@ int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,s
       blocked_reason="El símbolo esperado está excluido por los filtros de esta instancia.";
       return CM_CREATE_BLOCKED;
    }
-   if(!SymbolSelect(symbol,true) || MarketInfo(symbol,MODE_POINT)<=0)
+   if(!SymbolSelect(symbol,true))
    {
       blocked_reason="El símbolo esperado no está disponible en el terminal Slave.";
       return CM_CREATE_BLOCKED;
    }
    if(!CreatablePendingType(master.type))
    {
-      blocked_reason="El tipo de orden pendiente del Master no se crea automáticamente en MT4.";
+      blocked_reason="El tipo de orden pendiente del Master no se crea automáticamente.";
       return CM_CREATE_BLOCKED;
    }
    if(!SymbolAcceptsNewOrders(symbol,master.type,blocked_reason))
@@ -3275,9 +3390,9 @@ int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,s
 
    // El volumen se compara con el clamp del broker, pero crear fuera de rango
    // significaria copiar un tamaño distinto del pedido por el Master.
-   double step=VolumeStepOf(symbol);
-   double vmin=VolumeMinOf(symbol);
-   double vmax=VolumeMaxOf(symbol);
+   double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+   double vmin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
+   double vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volume=ExpectedSlaveVolume(symbol,master.vol,o.mult);
 
    if(volume<=0 || step<=0)
@@ -3304,11 +3419,34 @@ int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,s
                               master.stoplimit,blocked_reason))
       return CM_CREATE_BLOCKED;
 
-   created_ticket=SendPendingOrder(o,master,symbol,volume);
+   g_trade.SetTypeFillingBySymbol(symbol);
+   ResetLastError();
 
-   if(created_ticket<=0)
+   bool sent=SendPendingOrder(o,master,symbol,volume);
+
+   // Algunos brokers rechazan el modo de llenado deducido del simbolo para las
+   // pendientes. Se reintenta una sola vez con ORDER_FILLING_RETURN.
+   if(!TradeRequestSucceeded(sent) &&
+      g_trade.ResultRetcode()==TRADE_RETCODE_INVALID_FILL)
    {
-      created_ticket=0;
+      g_trade.SetTypeFilling(ORDER_FILLING_RETURN);
+      ResetLastError();
+      sent=SendPendingOrder(o,master,symbol,volume);
+   }
+
+   created_ticket=g_trade.ResultOrder();
+   if(!TradeRequestSucceeded(sent) || created_ticket==0)
+   {
+      // TIMEOUT/CONNECTION puede significar que el servidor acepto la orden y
+      // se perdio la respuesta. Reconciliar primero; si sigue sin saberse, no
+      // reintentar automaticamente porque podria duplicarla.
+      if(FindUniqueOwnedPending(o,master,created_ticket))
+         return CM_CREATE_DONE;
+
+      if(TradeRetcodeIndeterminate(g_trade.ResultRetcode()) ||
+         (TradeRequestSucceeded(sent) && created_ticket==0))
+         return CM_CREATE_UNCERTAIN;
+
       return CM_CREATE_FAILED;
    }
 
@@ -3323,48 +3461,41 @@ int CreatePendingCopy(const Owner &o,const OrdRec &master,long &created_ticket,s
 
    return CM_CREATE_DONE;
 }
-bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const long slave_ticket,
+bool ModifyPendingCopy(const Owner &o,const OrdRec &master,const ulong slave_ticket,
                        const bool change_price,const bool change_stops)
 {
-   // Igual que en FixPositionStops: sin enviar nada no hay error de trading
-   // que interpretar.
-   g_last_trade_error=0;
-
    OrdRec live;
    if(!StillOwnedPending(o,slave_ticket,live)) return false;
-
-   // La caducidad de la copia se conserva: OrderModify de MT4 reescribe ese
-   // campo en cada llamada y pasar cero convertiria en GTC una pendiente que
-   // tenia fecha de caducidad.
-   datetime expiration=OrderExpiration();
-   string symbol=live.symbol;
+   ENUM_ORDER_TYPE_TIME time_type=(ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+   datetime expiration=(datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
    double target_price=change_price ? master.price : live.price;
    double target_sl=change_stops ? master.sl : live.sl;
    double target_tp=change_stops ? master.tp : live.tp;
-
+   // El precio stop-limit del Master sólo se conoce desde el esquema 3; con un
+   // Master antiguo se conserva el valor de la copia.
+   double stoplimit=live.stoplimit;
+   if(change_price && IsStopLimitType(live.type) && master.stoplimit>0)
+      stoplimit=master.stoplimit;
    ResetLastError();
-   bool sent=OrderModify((int)slave_ticket,NormPrice(symbol,target_price),
-                         NormPrice(symbol,target_sl),NormPrice(symbol,target_tp),
-                         expiration,clrNONE);
-   if(!TradeOk(sent)) return false;
-   if(!SelectLivePending(slave_ticket)) return false;
-
-   double tol=StopTolPrice(symbol);
-   return PriceEq(OrderOpenPrice(),target_price,
-                  PendingTolPrice(symbol)) &&
-          StopEq(OrderStopLoss(),target_sl,tol) &&
-          StopEq(OrderTakeProfit(),target_tp,tol);
+   bool sent=g_trade.OrderModify(slave_ticket,target_price,target_sl,target_tp,
+                                 time_type,expiration,stoplimit);
+   if(!TradeRequestSucceeded(sent) || !OrderSelect(slave_ticket)) return false;
+   double tol=StopTolPrice(live.symbol);
+   return PriceEq(OrderGetDouble(ORDER_PRICE_OPEN),target_price,
+                  PendingTolPrice(live.symbol)) &&
+          StopEq(OrderGetDouble(ORDER_SL),target_sl,tol) &&
+          StopEq(OrderGetDouble(ORDER_TP),target_tp,tol);
 }
 
 //---------------- stale alert cleanup ----------------
-bool MasterOrderPresent(const Snap &snap,const long ticket)
+bool MasterOrderPresent(const Snap &snap,const ulong ticket)
 {
    for(int i=0;i<ArraySize(snap.ord);i++)
       if(snap.ord[i].ticket==ticket)
          return true;
    return false;
 }
-bool MasterPositionPresent(const Snap &snap,const long ticket)
+bool MasterPositionPresent(const Snap &snap,const ulong ticket)
 {
    for(int i=0;i<ArraySize(snap.pos);i++)
       if(snap.pos[i].ticket==ticket)
@@ -3388,15 +3519,15 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
 
       string key=g_alerts[i].key;
       string f[];
-      int n=StringSplit(key,(ushort)'|',f);
+      int n=StringSplit(key,'|',f);
       if(n<3)
          continue;
 
       // SLTP|canal|master|slave y FAIL|SLTP|canal|master|slave
       if(f[0]=="SLTP" && n==4 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[3]);
-         if(ticket>0 && SelectLivePosition(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[3]);
+         if(ticket>0 && PositionSelectByTicket(ticket)) continue;
          ResolveVanished(key,snap,"La posición avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[3]);
          ClearAlert("FAIL|"+key);
@@ -3407,8 +3538,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       }
       if(f[0]=="FAIL" && f[1]=="SLTP" && n==5 && f[2]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[4]);
-         if(ticket>0 && SelectLivePosition(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[4]);
+         if(ticket>0 && PositionSelectByTicket(ticket)) continue;
          ResolveVanished(key,snap,"La posición avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[4]);
          continue;
@@ -3418,9 +3549,9 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // los dos lados, porque el problema es la pareja, no un ticket suelto.
       if(f[0]=="POSVOL" && n==4 && f[1]==o.channel)
       {
-         long slave_ticket=(long)StringToInteger(f[3]);
-         long master_ticket=(long)StringToInteger(f[2]);
-         if(slave_ticket>0 && SelectLivePosition(slave_ticket) &&
+         ulong slave_ticket=(ulong)StringToInteger(f[3]);
+         ulong master_ticket=(ulong)StringToInteger(f[2]);
+         if(slave_ticket>0 && PositionSelectByTicket(slave_ticket) &&
             master_ticket>0 && MasterPositionPresent(snap,master_ticket)) continue;
          ResolveVanished(key,snap,"La posición con volumen distinto ya no existe en alguna de las dos cuentas."+
                                   "\nTicket Master: "+f[2]+
@@ -3431,9 +3562,9 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // PVOL|canal|master|slave: igual que POSVOL, para pendientes.
       if(f[0]=="PVOL" && n==4 && f[1]==o.channel)
       {
-         long slave_ticket=(long)StringToInteger(f[3]);
-         long master_ticket=(long)StringToInteger(f[2]);
-         if(slave_ticket>0 && SelectLivePending(slave_ticket) &&
+         ulong slave_ticket=(ulong)StringToInteger(f[3]);
+         ulong master_ticket=(ulong)StringToInteger(f[2]);
+         if(slave_ticket>0 && OrderSelect(slave_ticket) &&
             master_ticket>0 && MasterOrderPresent(snap,master_ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente con volumen distinto ya no existe en alguna de las dos cuentas."+
                                   "\nTicket Master: "+f[2]+
@@ -3444,8 +3575,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // PVALUES|canal|master|slave y FAIL|PVALUES|canal|master|slave
       if(f[0]=="PVALUES" && n==4 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[3]);
-         if(ticket>0 && SelectLivePending(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[3]);
+         if(ticket>0 && OrderSelect(ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[3]);
          ClearAlert("FAIL|"+key);
@@ -3456,8 +3587,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       }
       if(f[0]=="FAIL" && f[1]=="PVALUES" && n==5 && f[2]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[4]);
-         if(ticket>0 && SelectLivePending(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[4]);
+         if(ticket>0 && OrderSelect(ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[4]);
          continue;
@@ -3466,8 +3597,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // PEXTRA|canal|slave y PAMB|canal|slave
       if((f[0]=="PEXTRA" || f[0]=="PAMB") && n==3 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[2]);
-         if(ticket>0 && SelectLivePending(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[2]);
+         if(ticket>0 && OrderSelect(ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[2]);
          ClearAlert("FAIL|PEXTRA|"+f[1]+"|"+f[2]);
@@ -3478,8 +3609,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       }
       if(f[0]=="FAIL" && f[1]=="PEXTRA" && n==4 && f[2]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[3]);
-         if(ticket>0 && SelectLivePending(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[3]);
+         if(ticket>0 && OrderSelect(ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente avisada ya no existe en la cuenta Slave."+
                                   "\nTicket Slave: "+f[3]);
          continue;
@@ -3488,7 +3619,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // FAIL|CREATE|canal|master y PBLOCK|CREATE|canal|master
       if((f[0]=="FAIL" || f[0]=="PBLOCK") && f[1]=="CREATE" && n==4 && f[2]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[3]);
+         ulong ticket=(ulong)StringToInteger(f[3]);
          if(ticket>0 && MasterOrderPresent(snap,ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente del Master que no se pudo copiar ya no existe."+
                                   "\nTicket Master: "+f[3]);
@@ -3501,7 +3632,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // POSMISS|canal|master y POSAMB|canal|master
       if((f[0]=="POSMISS" || f[0]=="POSAMB") && n==3 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[2]);
+         ulong ticket=(ulong)StringToInteger(f[2]);
          if(ticket>0 && MasterPositionPresent(snap,ticket)) continue;
          ResolveVanished(key,snap,"La posición Master avisada ya no existe."+
                                   "\nTicket Master: "+f[2]);
@@ -3511,8 +3642,8 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // POSEXTRA|canal|slave
       if(f[0]=="POSEXTRA" && n==3 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[2]);
-         if(ticket>0 && SelectLivePosition(ticket)) continue;
+         ulong ticket=(ulong)StringToInteger(f[2]);
+         if(ticket>0 && PositionSelectByTicket(ticket)) continue;
          ResolveVanished(key,snap,"La posición activa extra del Slave ya no existe."+
                                   "\nTicket Slave: "+f[2]);
          continue;
@@ -3521,7 +3652,7 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
       // ORDMISS|canal|master y PEARLY|canal|master
       if((f[0]=="ORDMISS" || f[0]=="PEARLY") && n==3 && f[1]==o.channel)
       {
-         long ticket=(long)StringToInteger(f[2]);
+         ulong ticket=(ulong)StringToInteger(f[2]);
          if(ticket>0 && MasterOrderPresent(snap,ticket)) continue;
          ResolveVanished(key,snap,"La orden pendiente del Master avisada ya no existe."+
                                   "\nTicket Master: "+f[2]);
@@ -3592,14 +3723,17 @@ void CheckPending(const Owner &o,const Snap &snap)
       {
          assign[m]=best;
          slave_protected[best]=true;
-         RemoveProblem("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearMarketWait("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearAlert("PEXTRA|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+TicketText(so[best].ticket));
-         ResolveAlert("PAMB|"+o.channel+"|"+TicketText(so[best].ticket),
+         RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearMarketWait("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearAlert("PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ResolveAlert("PAMB|"+o.channel+"|"+
+                      StringFormat("%I64u",so[best].ticket),
             AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
             "\n\nPROBLEMA RESUELTO:\nLa orden pendiente del Slave corresponde a un ticket Master ignorado."+
-            "\nTicket Slave: "+TicketText(so[best].ticket));
+            "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket));
       }
    }
 
@@ -3631,16 +3765,20 @@ void CheckPending(const Owner &o,const Snap &snap)
       if(best<0)
          best=MatchOrdByPrice(o,snap.ord[m],so,slave_protected,tied);
 
-      string ambiguity_key="PAMBMASTER|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
+      string ambiguity_key="PAMBMASTER|"+o.channel+"|"+
+                           StringFormat("%I64u",snap.ord[m].ticket);
 
       if(tied>1)
       {
+         // Hay copias, pero ninguna identidad permite decidir cual corresponde
+         // a este ticket. Se considera presente para no crear un duplicado y no
+         // se modifica ninguna de las candidatas.
          master_matched[m]=true;
          string ambiguity=
             "\n\nPROBLEMA:\nNo se puede enlazar de forma fiable una orden pendiente Master con su copia Slave.\n\n"+
             "Estado: ORDEN PENDIENTE\n"+
             "Símbolo Master: "+snap.ord[m].symbol+"\n"+
-            "Ticket Master: "+TicketText(snap.ord[m].ticket)+"\n"+
+            "Ticket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+"\n"+
             "Copias Slave igualmente compatibles: "+IntegerToString(tied)+
             "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna modificación automática.";
          PersistAlert(ambiguity_key,AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+ambiguity);
@@ -3651,7 +3789,7 @@ void CheckPending(const Owner &o,const Snap &snap)
       ResolveAlert(ambiguity_key,
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
          "\n\nPROBLEMA RESUELTO:\nLa orden Master ya no presenta un enlace ambiguo."+
-         "\nTicket Master: "+TicketText(snap.ord[m].ticket));
+         "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket));
 
       // Sin copia exacta, la decision se aplaza a una segunda pasada: una
       // copia con otro volumen no puede reclamarse hasta que todas las
@@ -3671,43 +3809,44 @@ void CheckPending(const Owner &o,const Snap &snap)
 
          // El volumen vuelve a ser el esperado: se cierra con la misma pareja
          // de tickets con la que se abrió el aviso.
-         ResolveAlert("PVOL|"+o.channel+"|"+TicketText(snap.ord[m].ticket)+
-                      "|"+TicketText(so[best].ticket),
+         ResolveAlert("PVOL|"+o.channel+"|"+
+                      StringFormat("%I64u",snap.ord[m].ticket)+"|"+
+                      StringFormat("%I64u",so[best].ticket),
             AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
             "\n\nPROBLEMA RESUELTO:\nEl volumen de la orden pendiente copiada vuelve a ser el esperado."+
-            "\nTicket Master: "+TicketText(snap.ord[m].ticket)+
-            "\nTicket Slave: "+TicketText(so[best].ticket)+
+            "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+
+            "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket)+
             "\nVolumen Slave: "+VolumeText(so[best].symbol,so[best].vol));
-
-         string matched_create="CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
+         string matched_create="CREATE|"+o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
          RemoveProblem(matched_create);
          UnblockCreate(matched_create);
          ClearMarketWait(matched_create);
          ClearAlert("FAIL|"+matched_create);
          ClearAlert("PBLOCK|"+matched_create);
-         RemoveProblem("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearMarketWait("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearAlert("PEXTRA|"+o.channel+"|"+TicketText(so[best].ticket));
-         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+TicketText(so[best].ticket));
-         ResolveAlert("PAMB|"+o.channel+"|"+TicketText(so[best].ticket),
+         RemoveProblem("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearMarketWait("DELETE|"+o.channel+"|"+StringFormat("%I64u",so[best].ticket));
+         ClearAlert("PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ClearAlert("FAIL|PEXTRA|"+o.channel+"|"+
+                    StringFormat("%I64u",so[best].ticket));
+         ResolveAlert("PAMB|"+o.channel+"|"+
+                      StringFormat("%I64u",so[best].ticket),
             AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
             "\n\nPROBLEMA RESUELTO:\nLa orden pendiente del Slave ya se empareja con una orden Master."+
-            "\nTicket Master: "+TicketText(snap.ord[m].ticket)+
-            "\nTicket Slave: "+TicketText(so[best].ticket));
+            "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+
+            "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket));
 
          double stop_tol=StopTolPrice(so[best].symbol);
          bool price_bad=!PriceEq(snap.ord[m].price,so[best].price,
                                  PendingTolPrice(so[best].symbol));
          bool sl_bad=InpCheckStopLoss && !StopEq(snap.ord[m].sl,so[best].sl,stop_tol);
          bool tp_bad=InpCheckTakeProfit && !StopEq(snap.ord[m].tp,so[best].tp,stop_tol);
-         // El precio límite sólo se compara cuando el Master lo publica. En un
-         // Slave MT4 nunca hay copia STOP LIMIT, así que esto sólo se activa
-         // con un Master MT5 y una copia que no puede existir aquí.
+         // El precio límite sólo se compara cuando el Master lo publica.
          bool limit_bad=IsStopLimitType(snap.ord[m].type) && snap.ord[m].stoplimit>0 &&
                         !PriceEq(snap.ord[m].stoplimit,so[best].stoplimit,
                                  PendingTolPrice(so[best].symbol));
-         string suffix=o.channel+"|"+TicketText(snap.ord[m].ticket)+
-                       "|"+TicketText(so[best].ticket);
+         string suffix=o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket)+
+                       "|"+StringFormat("%I64u",so[best].ticket);
          string alert_key="PVALUES|"+suffix;
          string fix_key="FIXPEND|"+suffix;
 
@@ -3718,8 +3857,8 @@ void CheckPending(const Owner &o,const Snap &snap)
                "Estado: ORDEN PENDIENTE\n"+
                "Tipo: "+OrderTypeText(snap.ord[m].type)+"\n"+
                "Símbolo: "+so[best].symbol+"\n"+
-               "Ticket Master: "+TicketText(snap.ord[m].ticket)+"\n"+
-               "Ticket Slave: "+TicketText(so[best].ticket);
+               "Ticket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+"\n"+
+               "Ticket Slave: "+StringFormat("%I64u",so[best].ticket);
             if(price_bad)
                detail+="\n\nEntrada Master: "+PriceText(snap.ord[m].price)+
                        "\nEntrada Slave: "+PriceText(so[best].price);
@@ -3742,10 +3881,10 @@ void CheckPending(const Owner &o,const Snap &snap)
             if(MarketWaiting(fix_key))
                KeepAlert(alert_key);
             else
-               PersistAlert(alert_key,AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
-                                         detail+pending_action);
+               PersistAlert(alert_key,
+                  AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+pending_action);
 
-            if((change_price || change_stops) && !g_trade_busy &&
+            if((change_price || change_stops) &&
                ConfirmProblem(fix_key,InpAutoFixPersistSeconds) &&
                MarketWaitDue(fix_key))
             {
@@ -3767,17 +3906,12 @@ void CheckPending(const Owner &o,const Snap &snap)
                {
                   MarketClosedNotice(snap,fix_key,detail,so[best].symbol);
                }
-               else if(!PendingNotFrozen(so[best].symbol,so[best].type,so[best].price,
-                                         blocked_reason))
-               {
-                  PersistAlert("PBLOCK|"+fix_key,
-                     AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
-                     "\n\nACCIÓN:\nNo se puede modificar automáticamente.\n"+blocked_reason);
-               }
                else if(!PendingPriceAcceptable(so[best].symbol,so[best].type,target_price,
                                                target_sl,target_tp,
                                                IsStopLimitType(so[best].type) ? target_stoplimit : 0.0,
                                                blocked_reason) ||
+                       !PendingNotFrozen(so[best].symbol,so[best].type,
+                                         so[best].price,blocked_reason) ||
                        !AutoActionAllowed(o.channel,blocked_reason))
                {
                   PersistAlert("PBLOCK|"+fix_key,
@@ -3795,7 +3929,7 @@ void CheckPending(const Owner &o,const Snap &snap)
                   ClearMarketWait(fix_key);
                   RemoveProblem(fix_key);
                }
-               else if(LastTradeWasMarketClosed())
+               else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
                {
                   MarketClosedNotice(snap,fix_key,detail,so[best].symbol);
                   RemoveProblem(fix_key);
@@ -3818,8 +3952,8 @@ void CheckPending(const Owner &o,const Snap &snap)
                "\n\nPROBLEMA RESUELTO:\nLa orden pendiente ya tiene el precio, SL y TP correctos."+
                "\n\nEstado: ORDEN PENDIENTE\nTipo: "+OrderTypeText(snap.ord[m].type)+
                "\nSímbolo: "+so[best].symbol+
-               "\nTicket Master: "+TicketText(snap.ord[m].ticket)+
-               "\nTicket Slave: "+TicketText(so[best].ticket));
+               "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+
+               "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket));
             ClearAlert("FAIL|"+alert_key);
             ClearAlert("PBLOCK|"+fix_key);
             RemoveProblem(fix_key);
@@ -3843,27 +3977,28 @@ void CheckPending(const Owner &o,const Snap &snap)
       if(vol_match>=0 && vol_tied==1)
       {
          string vol_symbol=so[vol_match].symbol;
-         double vol_expected=ExpectedSlaveVolume(vol_symbol,snap.ord[m].vol,o.mult);
+         double expected_volume=ExpectedSlaveVolume(vol_symbol,snap.ord[m].vol,o.mult);
 
          master_matched[m]=true;
          slave_protected[vol_match]=true;
 
-         string vol_create="CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
+         string vol_create="CREATE|"+o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
          RemoveProblem(vol_create);
          ClearMarketWait(vol_create);
 
-         PersistAlert("PVOL|"+o.channel+"|"+TicketText(snap.ord[m].ticket)+
-                      "|"+TicketText(so[vol_match].ticket),
+         PersistAlert("PVOL|"+o.channel+"|"+
+                      StringFormat("%I64u",snap.ord[m].ticket)+"|"+
+                      StringFormat("%I64u",so[vol_match].ticket),
             AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nLa copia de una orden pendiente tiene un volumen distinto.\n\n"+
             "Estado: ORDEN PENDIENTE\n"+
             "Tipo: "+OrderTypeText(snap.ord[m].type)+"\n"+
             "Símbolo Master: "+snap.ord[m].symbol+"\n"+
             "Símbolo Slave: "+vol_symbol+"\n"+
-            "Ticket Master: "+TicketText(snap.ord[m].ticket)+"\n"+
-            "Ticket Slave: "+TicketText(so[vol_match].ticket)+"\n\n"+
+            "Ticket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+"\n"+
+            "Ticket Slave: "+StringFormat("%I64u",so[vol_match].ticket)+"\n\n"+
             "Volumen Master: "+VolumeText(vol_symbol,snap.ord[m].vol)+"\n"+
-            "Volumen Slave esperado: "+VolumeText(vol_symbol,vol_expected)+"\n"+
+            "Volumen Slave esperado: "+VolumeText(vol_symbol,expected_volume)+"\n"+
             "Volumen Slave real: "+VolumeText(vol_symbol,so[vol_match].vol)+"\n"+
             "Precio de entrada Master: "+PriceText(snap.ord[m].price)+"\n"+
             "Precio de entrada Slave: "+PriceText(so[vol_match].price)+
@@ -3880,6 +4015,7 @@ void CheckPending(const Owner &o,const Snap &snap)
    if(InpMonitorPendingOrders && InpExpectPendingCopies)
    {
       int missing_pending=0;
+
       bool early_blocked[];
       ArrayResize(early_blocked,ArraySize(snap.ord));
       ArrayInitialize(early_blocked,false);
@@ -3889,7 +4025,7 @@ void CheckPending(const Owner &o,const Snap &snap)
       // la vez, así que la que llegaba tarde se avisaba y no se resolvía.
       for(int m=0;m<ArraySize(snap.ord);m++)
       {
-         string suffix=o.channel+"|"+TicketText(snap.ord[m].ticket);
+         string suffix=o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
          string miss_key="ORDMISS|"+suffix;
          string early_key="PEARLY|"+suffix;
 
@@ -3942,7 +4078,7 @@ void CheckPending(const Owner &o,const Snap &snap)
                (early_exact_volume ? "" : " (con otro volumen)")+":\n"+
                "Tipo: "+PositionTypeText(g_unpaired_pos[early].type)+"\n"+
                "Símbolo: "+g_unpaired_pos[early].symbol+"\n"+
-               "Ticket Slave: "+TicketText(g_unpaired_pos[early].ticket)+"\n"+
+               "Ticket Slave: "+StringFormat("%I64u",g_unpaired_pos[early].ticket)+"\n"+
                "Volumen Slave: "+VolumeText(g_unpaired_pos[early].symbol,g_unpaired_pos[early].vol)+"\n"+
                "Precio de entrada: "+PriceText(g_unpaired_pos[early].price)+
                "\n\nACCIÓN:\nNo se crea ninguna copia mientras esa posición exista:"+
@@ -3970,13 +4106,14 @@ void CheckPending(const Owner &o,const Snap &snap)
          for(int m=0;m<ArraySize(snap.ord);m++)
          {
             if(master_matched[m] || early_blocked[m]) continue;
-            string create_key="CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
-            if(!InpAutoCreateMissingPending || g_trade_busy || IsCreateBlocked(create_key) ||
+            string create_key="CREATE|"+o.channel+"|"+
+                              StringFormat("%I64u",snap.ord[m].ticket);
+            if(!InpAutoCreateMissingPending || IsCreateBlocked(create_key) ||
                !ConfirmProblem(create_key,InpMissingPendingConfirmSeconds) ||
                !MarketWaitDue(create_key))
                continue;
 
-            long created_ticket=0;
+            ulong created_ticket=0;
             string blocked_reason="";
             string detail="\n\nPROBLEMA:\nFaltaba la copia de una orden pendiente.\n\n"+
                           MasterPendingDetails(o,snap.ord[m]);
@@ -4016,27 +4153,36 @@ void CheckPending(const Owner &o,const Snap &snap)
             if(created==CM_CREATE_DONE)
             {
                Tg(AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+detail+
-                  "\nTicket Slave creado: "+TicketText(created_ticket)+
+                  "\nTicket Slave creado: "+StringFormat("%I64u",created_ticket)+
                   "\n\nACCIÓN AUTOMÁTICA:\nLa orden pendiente fue creada correctamente.");
                ClearAlert("FAIL|"+create_key);
                ClearAlert("PBLOCK|"+create_key);
                ClearMarketWait(create_key);
                // El RESUELTO ya salió con el mensaje de la creación.
-               ClearAlert("ORDMISS|"+o.channel+"|"+TicketText(snap.ord[m].ticket));
+               ClearAlert("ORDMISS|"+o.channel+"|"+
+                          StringFormat("%I64u",snap.ord[m].ticket));
             }
             else if(created==CM_CREATE_UNVERIFIED)
             {
                // La orden existe pero el monitor no la reconoce como copia
                // propia. Reintentar duplicaria la pendiente en cada ventana.
-               // En MT4 la causa habitual es un broker que reescribe el
-               // comentario de la orden.
                BlockCreate(create_key);
                PersistAlert("FAIL|"+create_key,
                   AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
-                  "\nTicket Slave creado: "+TicketText(created_ticket)+
+                  "\nTicket Slave creado: "+StringFormat("%I64u",created_ticket)+
                   "\n\nACCIÓN AUTOMÁTICA:\nLa orden se envió pero no se reconoce como"+
                   " copia de este canal.\nRevisarla manualmente: la creación automática de"+
                   " este ticket Master queda bloqueada para no duplicarla."+
+                  TradeFailureDetails());
+            }
+            else if(created==CM_CREATE_UNCERTAIN)
+            {
+               BlockCreate(create_key);
+               PersistAlert("FAIL|"+create_key,
+                  AlertHeader(snap,"🔴 COPYMONITOR — CRÍTICO")+detail+
+                  "\n\nACCIÓN AUTOMÁTICA:\nEl servidor no confirmó si la orden fue aceptada."+
+                  "\nLa creación automática queda bloqueada para evitar una copia duplicada."+
+                  "\nRevisar manualmente las órdenes de la cuenta Slave."+
                   TradeFailureDetails());
             }
             else if(created==CM_CREATE_BLOCKED)
@@ -4047,7 +4193,7 @@ void CheckPending(const Owner &o,const Snap &snap)
             }
             // El bróker puede rechazar por sesión cerrada aunque el calendario
             // la declare abierta, por ejemplo en un festivo.
-            else if(LastTradeWasMarketClosed())
+            else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
             {
                MarketClosedNotice(snap,create_key,detail,create_symbol);
             }
@@ -4061,7 +4207,7 @@ void CheckPending(const Owner &o,const Snap &snap)
          }
       }
 
-      // Clave agrupada de las versiones anteriores a la v1.01: se retira en
+      // Clave agrupada de las versiones anteriores a la v1.21: se retira en
       // silencio para que un estado persistido no quede activo para siempre.
       ClearAlert("PMISS|"+o.channel);
    }
@@ -4099,7 +4245,10 @@ void CheckPending(const Owner &o,const Snap &snap)
             "\n\nACCIÓN:\nRevisar las órdenes pendientes de ambas cuentas."+
             "\nEl borrado automático está bloqueado mientras el Master tenga pendientes.";
 
-         PersistAlert("PAMB|"+o.channel+"|"+TicketText(so[s].ticket),msg);
+         PersistAlert(
+            "PAMB|"+o.channel+"|"+
+            StringFormat("%I64u",so[s].ticket),
+            msg);
 
          continue;
       }
@@ -4108,7 +4257,9 @@ void CheckPending(const Owner &o,const Snap &snap)
       {
          // El Master no tiene pendientes, pero todavia no lleva el tiempo
          // suficiente para fiarse de ese cero.
-         PersistAlert("PAMB|"+o.channel+"|"+TicketText(so[s].ticket),
+         PersistAlert(
+            "PAMB|"+o.channel+"|"+
+            StringFormat("%I64u",so[s].ticket),
             AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+
             "\n\nPROBLEMA:\nExiste una orden pendiente en el Slave que no se puede emparejar.\n\n"+
             SlavePendingDetails(so[s])+
@@ -4122,13 +4273,16 @@ void CheckPending(const Owner &o,const Snap &snap)
       }
 
       ResolveAlert(
-         "PAMB|"+o.channel+"|"+TicketText(so[s].ticket),
+         "PAMB|"+o.channel+"|"+
+         StringFormat("%I64u",so[s].ticket),
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
          "\n\nPROBLEMA RESUELTO:\nLa orden pendiente del Slave ya se puede evaluar: el Master no tiene pendientes."+
-         "\nTicket Slave: "+TicketText(so[s].ticket));
+         "\nTicket Slave: "+StringFormat("%I64u",so[s].ticket));
 
-      string delete_problem="DELETE|"+o.channel+"|"+TicketText(so[s].ticket);
-      string key="PEXTRA|"+o.channel+"|"+TicketText(so[s].ticket);
+      string delete_problem="DELETE|"+o.channel+"|"+StringFormat("%I64u",so[s].ticket);
+      string key=
+         "PEXTRA|"+o.channel+"|"+
+         StringFormat("%I64u",so[s].ticket);
       string detail=
          "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
          SlavePendingDetails(so[s]);
@@ -4140,9 +4294,6 @@ void CheckPending(const Owner &o,const Snap &snap)
          PersistAlert(key,alert);
 
       if(!InpAutoDeleteExtraPending)
-         continue;
-
-      if(g_trade_busy)
          continue;
 
       if(!ConfirmProblem(delete_problem,InpExtraPendingConfirmSeconds))
@@ -4165,25 +4316,25 @@ void CheckPending(const Owner &o,const Snap &snap)
          continue;
       }
 
-      string frozen_reason="";
-      if(!PendingNotFrozen(so[s].symbol,so[s].type,so[s].price,frozen_reason) ||
-         !AutoActionAllowed(o.channel,frozen_reason))
-      {
-         PersistAlert("PBLOCK|"+delete_problem,
-            AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
-            "\n\nACCIÓN:\nNo se puede eliminar automáticamente.\n"+frozen_reason);
-         continue;
-      }
-
       // Final safety re-check.
       OrdRec live;
 
       if(!StillOwnedPending(o,so[s].ticket,live))
          continue;
 
+      string delete_blocked="";
+      if(!PendingNotFrozen(live.symbol,live.type,live.price,delete_blocked) ||
+         !AutoActionAllowed(o.channel,delete_blocked))
+      {
+         PersistAlert("PBLOCK|"+delete_problem,
+            AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
+            "\n\nACCIÓN:\nNo se puede eliminar automáticamente.\n"+delete_blocked);
+         continue;
+      }
+
       ResetLastError();
       bool ok=RegisterAutoActionAnd(o.channel,
-                 TradeOk(OrderDelete((int)so[s].ticket,clrNONE)));
+                 TradeRequestSucceeded(g_trade.OrderDelete(so[s].ticket)));
 
       detail=
          "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
@@ -4201,7 +4352,7 @@ void CheckPending(const Owner &o,const Snap &snap)
          ClearAlert("PBLOCK|"+delete_problem);
          ClearMarketWait(delete_problem);
       }
-      else if(LastTradeWasMarketClosed())
+      else if(TradeRetcodeIsMarketClosed(g_trade.ResultRetcode()))
       {
          MarketClosedNotice(snap,delete_problem,detail,live.symbol);
          RemoveProblem(delete_problem);
@@ -4282,21 +4433,22 @@ void CheckCounts(const Owner &o,const Snap &snap)
 
    int filtered_pos=0,unknown_pos=0,filtered_ord=0,unknown_ord=0;
 
-   // MT4 guarda posiciones y pendientes en la misma coleccion: un solo
-   // recorrido las clasifica por tipo.
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(PositionGetTicket(i)==0) continue;
+      ClassifyHidden(o,PositionGetString(POSITION_SYMBOL),
+                     PositionGetString(POSITION_COMMENT),filtered_pos,unknown_pos);
+   }
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      bool pending=IsPendingType(OrderType());
-      if(!pending && !IsPositionType(OrderType())) continue;
-      if(pending)
-         ClassifyHidden(o,OrderSymbol(),OrderComment(),filtered_ord,unknown_ord);
-      else
-         ClassifyHidden(o,OrderSymbol(),OrderComment(),filtered_pos,unknown_pos);
+      if(OrderGetTicket(i)==0) continue;
+      if(!IsPending((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE))) continue;
+      ClassifyHidden(o,OrderGetString(ORDER_SYMBOL),OrderGetString(ORDER_COMMENT),
+                     filtered_ord,unknown_ord);
    }
 
-   // Las posiciones Slave sin pareja solo generan aviso propio en el perfil
-   // PORTFOLIO46. En los demas perfiles nadie las cuenta: aqui si.
+   // Una posicion Slave sin pareja solo entra aqui cuando no genera aviso
+   // propio; con InpAlertExtraPositions activo cada una tiene el suyo.
    int silent_extra_pos=(AlertExtraPositions(o) ? 0 : ArraySize(g_unpaired_pos));
 
    bool unexplained=(filtered_pos>0 || unknown_pos>0 ||
@@ -4364,6 +4516,7 @@ void ProcessOwner(const Owner &o,const Snap &s)
    // avisos de snapshot, porque si no el monitor quedaria mudo para siempre.
    if(s.status==CM_SNAP_SCHEMA || s.status==CM_SNAP_CHANNEL)
    {
+      InvalidateChannelTrust(o.channel);
       string cause=(s.status==CM_SNAP_SCHEMA)
          ? "El snapshot del Master usa un esquema que este Slave no entiende."
          : "El snapshot encontrado pertenece a otro canal Master.";
@@ -4392,6 +4545,7 @@ void ProcessOwner(const Owner &o,const Snap &s)
    // silencio es exactamente lo contrario de lo que debe hacer un monitor.
    if(!s.valid || !s.fresh)
    {
+      InvalidateChannelTrust(o.channel);
       if(ci>=0 && g_channel_state[ci].unfresh_since==0)
          g_channel_state[ci].unfresh_since=now;
 
@@ -4421,6 +4575,7 @@ void ProcessOwner(const Owner &o,const Snap &s)
    // al Slave vigilando otra cuenta sin decir una palabra.
    if(ci>=0 && g_expected_accounts[ci]>0 && s.account!=g_expected_accounts[ci])
    {
+      InvalidateChannelTrust(o.channel);
       PersistAlert("MACCOUNT|"+o.channel,
          AlertHeader(s,"🔴 COPYMONITOR — CRÍTICO")+
          "\n\nPROBLEMA:\nEl snapshot lo publica una cuenta Master distinta de la esperada."+
@@ -4434,17 +4589,14 @@ void ProcessOwner(const Owner &o,const Snap &s)
       AlertHeader(s,"🟢 COPYMONITOR — RESUELTO")+
       "\n\nPROBLEMA RESUELTO:\nEl snapshot vuelve a publicarlo la cuenta Master esperada.");
 
-   // Con el snapshot ya dado por bueno: anotar su marca de escritura y desde
-   // cuándo el Master no tiene pendientes. De ahí sale la guarda del borrado.
-   TrackChannelSnapshot(o.channel,s);
-
-   // Un Master desconectado de su servidor conserva su lista de operaciones
-   // tal como estaba y la sigue publicando cada segundo: el snapshot es
-   // fresco, el contenido es pasado. Es el único fallo que se confunde con el
+   // Un Master desconectado de su servidor conserva las colecciones tal como
+   // estaban y las sigue publicando cada segundo: el snapshot es fresco, el
+   // contenido es pasado. Es el único fallo que se confunde con el
    // funcionamiento normal, así que mientras dure no se compara ni se corrige
    // nada: actuar sobre datos congelados es peor que no actuar.
    if(s.connected==CM_LINK_DOWN)
    {
+      InvalidateChannelTrust(o.channel);
       if(ci>=0 && g_channel_state[ci].offline_since==0)
          g_channel_state[ci].offline_since=now;
 
@@ -4457,21 +4609,33 @@ void ProcessOwner(const Owner &o,const Snap &s)
             "\n\nPROBLEMA:\nEl terminal Master ha perdido la conexión con su servidor."+
             "\nSin conexión desde hace "+IntegerToString(offline)+" s."+
             "\nEl snapshot sigue llegando, pero su contenido es la última foto"+
-            " conocida: las operaciones pueden haber cambiado sin que se vea."+
+            " conocida: las posiciones pueden haber cambiado sin que se vea."+
             "\n\nACCIÓN:\nRevisar el terminal Master."+
             "\nLa comparación y toda corrección automática están suspendidas.");
-         return;
       }
+      // La confirmacion solo evita alertas por microcortes. Desde el primer
+      // DOWN conocido no se compara ni se actua sobre colecciones congeladas.
+      return;
    }
    else
    {
       if(ci>=0)
          g_channel_state[ci].offline_since=0;
+
+      // Tras una caida, o al arrancar, se exige una ventana corta de datos
+      // estables antes de reanudar matching y correcciones.
+      if(!ChannelRecoveryConfirmed(o.channel))
+         return;
+
       ResolveAlert("MOFF|"+o.channel,
          AlertHeader(s,"🟢 COPYMONITOR — RESUELTO")+
          "\n\nPROBLEMA RESUELTO:\nEl terminal Master ha recuperado la conexión con su servidor."+
          "\n\nACCIÓN:\nLa comparación y las correcciones automáticas se reanudan.");
    }
+
+   // Solo un snapshot continuamente confiable alimenta la confirmacion de
+   // Master vacio que puede autorizar el borrado de una pendiente.
+   TrackChannelSnapshot(o.channel,s);
 
    // La falta de permiso de trading no se avisa por si sola: queda en el panel
    // y se informa como BLOQUEADO sobre el problema concreto que no se pudo
@@ -4484,41 +4648,22 @@ void ProcessOwner(const Owner &o,const Snap &s)
    CheckCounts(o,s);
    ResolveVanishedAlerts(o,s);
 }
-string SnapshotStateText(const Snap &s)
-{
-   if(s.status==CM_SNAP_SCHEMA) return "ESQUEMA INCOMPATIBLE";
-   if(s.status==CM_SNAP_CHANNEL) return "CANAL CRUZADO";
-   if(!s.valid) return "NO DATA";
-   if(!s.fresh) return "STALE";
-   if(s.connected==CM_LINK_DOWN) return "MASTER SIN CONEXION";
-   return "ONLINE";
-}
-// Un Master de esquema anterior al 4 no declara su enlace: no se puede
-// afirmar ni que lo tenga ni que lo haya perdido.
-string MasterLinkText(const Snap &s)
-{
-   if(s.connected==CM_LINK_UP) return "CONECTADO";
-   if(s.connected==CM_LINK_DOWN) return "SIN CONEXION";
-   return "NO DISPONIBLE (Master anterior al esquema 4)";
-}
-int ChannelActionCount(const string channel)
-{
-   int i=ChannelStateIndex(channel);
-   if(i<0) return 0;
-   if(g_channel_state[i].actions_since==0 ||
-      (TimeLocal()-g_channel_state[i].actions_since)>=3600)
-      return 0;
-   return g_channel_state[i].actions_count;
-}
-// El propio terminal Slave desconectado devuelve la ultima foto conocida de
-// sus operaciones: comparar contra ella es comparar contra el pasado, y
-// corregir sobre ella es actuar a ciegas. Mientras dure, se suspende todo.
+//---------------- instance level checks ----------------
+// El propio terminal Slave desconectado devuelve la foto cacheada de sus
+// colecciones: comparar contra ella es comparar contra el pasado, y corregir
+// sobre ella es actuar a ciegas. Mientras dure, se suspende todo.
 // Devuelve true si se puede seguir trabajando.
 bool SlaveLinkOk()
 {
-   if(IsConnected())
+   if(TerminalInfoInteger(TERMINAL_CONNECTED))
    {
       g_slave_offline_since=0;
+      if(g_slave_trusted_since==0)
+         g_slave_trusted_since=TimeLocal();
+
+      if((TimeLocal()-g_slave_trusted_since)<InpLinkRecoverySeconds)
+         return false;
+
       if(g_slave_link_down)
       {
          g_slave_link_down=false;
@@ -4530,21 +4675,25 @@ bool SlaveLinkOk()
       return true;
    }
 
+   g_slave_trusted_since=0;
+   InvalidateAllChannelTrust();
+
    if(g_slave_offline_since==0)
       g_slave_offline_since=TimeLocal();
 
    int offline=(int)(TimeLocal()-g_slave_offline_since);
 
-   // Una microdesconexión no es una caída.
+   // Una microdesconexion no genera alerta, pero tampoco autoriza a comparar
+   // ni corregir sobre las colecciones cacheadas.
    if(offline<InpSlaveOfflineConfirmSeconds)
-      return true;
+      return false;
 
    g_slave_link_down=true;
    PersistAlert("SOFF|"+InpSlaveID,
       LocalHeader("🔴 COPYMONITOR — CRÍTICO")+
       "\n\nPROBLEMA:\nEl terminal Slave ha perdido la conexión con su servidor."+
       "\nSin conexión desde hace "+IntegerToString(offline)+" s."+
-      "\nSus operaciones son la última foto conocida."+
+      "\nSus posiciones y órdenes son la última foto conocida."+
       "\n\nACCIÓN:\nRevisar el terminal Slave."+
       "\nLa comparación y toda corrección automática están suspendidas.");
    return false;
@@ -4561,7 +4710,7 @@ void CheckMarginLevel()
       return;
    }
 
-   double used=AccountMargin();
+   double used=AccountInfoDouble(ACCOUNT_MARGIN);
    double level=AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
 
    // Sin margen ocupado no hay nivel que comparar: no es un problema.
@@ -4588,7 +4737,7 @@ void CheckMarginLevel()
       "Nivel actual: "+DoubleToString(level,2)+" %\n"+
       "Nivel mínimo: "+DoubleToString(InpMinMarginLevelPercent,2)+" %\n"+
       "Margen usado: "+DoubleToString(used,2)+"\n"+
-      "Capital: "+DoubleToString(AccountEquity(),2)+
+      "Capital: "+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+
       "\n\nACCIÓN:\nRevisar la exposición de la cuenta Slave."+
       "\nUna copia que no entre por falta de margen se verá como copia faltante.");
 }
@@ -4617,6 +4766,17 @@ void CheckDroppedAlerts()
          "\n\nPROBLEMA RESUELTO:\nLa cola de Telegram vuelve a estar vacía y los avisos se entregan."+
          "\nTotal descartado durante el incidente: "+IntegerToString(g_tg_dropped));
 }
+// Un latido que depende de Telegram no sirve cuando Telegram es justo lo que
+// ha fallado: si no está configurado, al menos sale por push.
+void TgOrPush(const string msg)
+{
+   if(TgConfigured())
+   {
+      Tg(msg);
+      return;
+   }
+   PushFallback(AlertDigest(msg));
+}
 // Resumen del estado vigilado, para el aviso de arranque y el latido.
 string MonitorStateText(const Owner &o[],const Snap &s[])
 {
@@ -4644,7 +4804,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave MT4 v1.05 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.26 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -4670,14 +4830,42 @@ void Heartbeat(const Owner &o[],const Snap &s[])
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este latido sólo confirma que el monitor está vivo.");
 }
+
+string SnapshotStateText(const Snap &s)
+{
+   if(s.status==CM_SNAP_SCHEMA) return "ESQUEMA INCOMPATIBLE";
+   if(s.status==CM_SNAP_CHANNEL) return "CANAL CRUZADO";
+   if(!s.valid) return "NO DATA";
+   if(!s.fresh) return "STALE";
+   if(s.connected==CM_LINK_DOWN) return "MASTER SIN CONEXIÓN";
+   return "ONLINE";
+}
+// Un Master de esquema anterior al 4 no declara su enlace: no se puede
+// afirmar ni que lo tenga ni que lo haya perdido.
+string MasterLinkText(const Snap &s)
+{
+   if(s.connected==CM_LINK_UP) return "CONECTADO";
+   if(s.connected==CM_LINK_DOWN) return "SIN CONEXIÓN";
+   return "NO DISPONIBLE (Master anterior al esquema 4)";
+}
+int ChannelActionCount(const string channel)
+{
+   int i=ChannelStateIndex(channel);
+   if(i<0) return 0;
+   if(g_channel_state[i].actions_since==0 ||
+      (TimeLocal()-g_channel_state[i].actions_since)>=3600)
+      return 0;
+   return g_channel_state[i].actions_count;
+}
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE MT4 v1.05 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.26 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";
-   p+="Terminal Slave: "+(IsConnected() ? "CONECTADO" : "SIN CONEXION")+"\n\n";
+   p+="Terminal Slave: "+(TerminalInfoInteger(TERMINAL_CONNECTED)
+                          ? "CONECTADO" : "SIN CONEXIÓN")+"\n\n";
    for(int i=0;i<ArraySize(o);i++)
    {
       PosRec sp[];SlavePosForOwner(o[i],sp);
@@ -4690,7 +4878,7 @@ void Panel(const Owner &o[],const Snap &s[])
       p+="  Enlace Master: "+MasterLinkText(s[i])+"\n";
       p+="  Open M/S: "+IntegerToString(s[i].open_total)+"/"+IntegerToString(ArraySize(sp))+"\n";
       p+="  Pending M/S: "+IntegerToString(s[i].pending_total)+"/"+IntegerToString(ArraySize(sord))+"\n";
-      p+="  Acciones automaticas esta hora: "+IntegerToString(ChannelActionCount(o[i].channel));
+      p+="  Acciones automáticas esta hora: "+IntegerToString(ChannelActionCount(o[i].channel));
       if(InpMaxAutoActionsPerHour>0)
          p+="/"+IntegerToString(InpMaxAutoActionsPerHour);
       p+="\n";
@@ -4703,12 +4891,7 @@ void Panel(const Owner &o[],const Snap &s[])
    p+="Extra pending auto-delete: "+(InpAutoDeleteExtraPending?"YES":"NO")+"\n";
    p+="Missing pending auto-create: "+(InpAutoCreateMissingPending?"YES":"NO")+
       " after "+IntegerToString(InpMissingPendingConfirmSeconds)+"s\n";
-   if(!g_trade_allowed)
-      p+="Auto corrections: BLOCKED: "+g_trade_block_reason+"\n";
-   else if(g_trade_busy)
-      p+="Auto corrections: WAITING: contexto de trading ocupado\n";
-   else
-      p+="Auto corrections: READY\n";
+   p+="Auto corrections: "+(g_trade_allowed ? "READY" : "BLOCKED: "+g_trade_block_reason)+"\n";
    if(ArraySize(g_market_wait)>0)
       p+="Esperando apertura de mercado: "+IntegerToString(ArraySize(g_market_wait))+"\n";
    if(!TgConfigured())
@@ -4754,38 +4937,27 @@ void PruneState()
       ArrayResize(g_alerts,n-1);
    }
 }
-// MT4 no tiene OnTradeTransaction. Esta firma resume el estado de la cuenta
-// Slave para que OnTick detecte un cambio real sin repetir el ciclo completo
-// en cada cotizacion.
-string SlaveStateSignature()
-{
-   string sig=IntegerToString(OrdersTotal());
-   for(int i=OrdersTotal()-1;i>=0;i--)
-   {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
-         continue;
-      sig+="|"+IntegerToString(OrderTicket())+","+
-           IntegerToString(OrderType())+","+
-           DoubleToString(OrderLots(),4)+","+
-           DoubleToString(OrderOpenPrice(),8)+","+
-           DoubleToString(OrderStopLoss(),8)+","+
-           DoubleToString(OrderTakeProfit(),8);
-   }
-   return sig;
-}
 void Cycle()
 {
    if(g_busy)return;
+
+   // Verificar propiedad antes de leer o tocar la cuenta. Si una instancia
+   // realmente colgada fue sustituida y luego revive, se retira sin ejecutar
+   // un ciclo concurrente.
+   if(g_instance_lock_owned && !RefreshInstanceLock())
+   {
+      Print("[CM SLAVE] Se perdió el bloqueo exclusivo de la instancia. El EA se retira.");
+      ExpertRemove();
+      return;
+   }
+
    g_busy=true;
 
    g_trade_allowed=TradingPermitted(g_trade_block_reason);
-   // El contexto de trading es unico en MT4: si otro EA lo tiene ocupado no hay
-   // nada que avisar, solo que esperar al ciclo siguiente.
-   g_trade_busy=IsTradeContextBusy();
 
-   // Con el terminal Slave desconectado su lista de operaciones es una foto
-   // vieja: se leen los snapshots para que el panel siga informando, pero no
-   // se compara ni se corrige nada contra datos que no son los de ahora.
+   // Con el terminal Slave desconectado sus colecciones son una foto vieja:
+   // se leen los snapshots para que el panel siga informando, pero no se
+   // compara ni se corrige nada contra datos que no son los de ahora.
    bool slave_ok=SlaveLinkOk();
 
    Snap s[];ArrayResize(s,ArraySize(g_owners));
@@ -4796,7 +4968,8 @@ void Cycle()
          ProcessOwner(g_owners[i],s[i]);
    }
 
-   CheckMarginLevel();
+   if(slave_ok)
+      CheckMarginLevel();
 
    if(g_send_startup)
    {
@@ -4812,53 +4985,123 @@ void Cycle()
    // Despues de vaciar: si algo se perdio por cola llena, hay que decirlo.
    CheckDroppedAlerts();
    SaveAlertState();
+   SaveTgQueue();
    // El testigo se refresca cada ciclo: lo que no se refresca esta muerto.
-   RefreshInstanceLock();
-
-   // Despues de las correcciones, para que lo que acaba de hacer este EA no
-   // dispare otro ciclo inmediato desde OnTick.
-   g_last_state=SlaveStateSignature();
+   if(!RefreshInstanceLock())
+      Print("[CM SLAVE] No se pudo refrescar el bloqueo exclusivo de la instancia.");
 
    g_busy=false;
 }
-// Dos instancias con el mismo InpSlaveID comparten el fichero de estado de
-// avisos y se lo pisan: la que escribe ultima borra los avisos activos de la
-// otra, y con ellos sus RESUELTO. Las variables globales del terminal se
-// comparten entre graficos, asi que sirven de testigo.
+// Dos instancias con el mismo InpSlaveID comparten el fichero de estado. El
+// lock FILE_COMMON excluye tambien otros terminales MT4/MT5; el token atomico
+// evita carreras entre graficos dentro de este terminal.
 string InstanceLockName()
 {
-   return "CM_SLAVE_"+SafeFileToken(InpSlaveID);
+   return "CM_SLAVE_"+SafeFileToken(InpSlaveID)+"_OWNER";
+}
+string InstanceHeartbeatName()
+{
+   return "CM_SLAVE_"+SafeFileToken(InpSlaveID)+"_HEARTBEAT";
+}
+string InstanceFileLockPath()
+{
+   return "CopyMonitorMulti\\CM_SLAVE_"+InpSlaveID+".lock";
+}
+int InstanceLockTTL()
+{
+   int read_ms=(InpSnapshotReadAttempts-1)*InpSnapshotReadRetryMs*ArraySize(g_owners);
+   int network_ms=InpTelegramSendsPerCycle*InpTelegramTimeoutMs;
+   int blocking_seconds=(read_ms+network_ms+999)/1000;
+   return 3*InpMonitorSeconds+blocking_seconds+10;
 }
 bool ClaimInstanceLock()
 {
-   string name=InstanceLockName();
+   FolderCreate("CopyMonitorMulti",FILE_COMMON);
+   g_instance_file_lock=FileOpen(InstanceFileLockPath(),
+                                 FILE_COMMON|FILE_READ|FILE_WRITE|FILE_BIN);
+   if(g_instance_file_lock==INVALID_HANDLE)
+      return false;
 
-   if(GlobalVariableCheck(name))
+   string owner_name=InstanceLockName();
+   string heartbeat_name=InstanceHeartbeatName();
+
+   // GlobalVariableTemp crea el cero inicial una sola vez por terminal. El
+   // compare-and-set posterior decide atomicamente quien captura el lock.
+   GlobalVariableTemp(owner_name);
+   GlobalVariableTemp(heartbeat_name);
+
+   double current=GlobalVariableGet(owner_name);
+   datetime heartbeat=(datetime)GlobalVariableGet(heartbeat_name);
+   if(heartbeat<=0) heartbeat=GlobalVariableTime(owner_name);
+   if(current!=0.0 && heartbeat>0 &&
+      (TimeLocal()-heartbeat)<=InstanceLockTTL())
    {
-      datetime last=(datetime)GlobalVariableGet(name);
-      // Un testigo que nadie refresca es de una instancia que ya no existe.
-      int ttl=3*InpMonitorSeconds+5;
-      if(last>0 && (TimeLocal()-last)<=ttl)
-         return false;
+      FileClose(g_instance_file_lock);
+      g_instance_file_lock=INVALID_HANDLE;
+      return false;
    }
 
-   GlobalVariableSet(name,(double)TimeLocal());
+   double token=(double)ChartID();
+   if(token==0.0) token=(double)GetTickCount()+1.0;
+
+   if(!GlobalVariableSetOnCondition(owner_name,token,current))
+   {
+      FileClose(g_instance_file_lock);
+      g_instance_file_lock=INVALID_HANDLE;
+      return false;
+   }
+
+   g_instance_lock_token=token;
+   g_instance_lock_owned=true;
+   GlobalVariableSet(heartbeat_name,(double)TimeLocal());
    return true;
 }
-void RefreshInstanceLock()
+bool RefreshInstanceLock()
 {
-   GlobalVariableSet(InstanceLockName(),(double)TimeLocal());
+   if(!g_instance_lock_owned) return false;
+   if(!GlobalVariableSetOnCondition(InstanceLockName(),
+                                    g_instance_lock_token,
+                                    g_instance_lock_token))
+   {
+      g_instance_lock_owned=false;
+      return false;
+   }
+   GlobalVariableSet(InstanceHeartbeatName(),(double)TimeLocal());
+   return true;
 }
 void ReleaseInstanceLock()
 {
-   GlobalVariableDel(InstanceLockName());
+   if(g_instance_lock_owned &&
+      GlobalVariableSetOnCondition(InstanceLockName(),0.0,g_instance_lock_token))
+      GlobalVariableSet(InstanceHeartbeatName(),0.0);
+   g_instance_lock_owned=false;
+   g_instance_lock_token=0.0;
+   if(g_instance_file_lock!=INVALID_HANDLE)
+   {
+      FileClose(g_instance_file_lock);
+      g_instance_file_lock=INVALID_HANDLE;
+   }
 }
 
 bool Validate()
 {
-   if(Trim(InpSlaveID)=="")
+   if(!InstanceIdValid(Trim(InpSlaveID)))
    {
-      Print("[CM SLAVE] InpSlaveID no puede estar vacio.");
+      PrintFormat("[CM SLAVE] InpSlaveID debe usar 1-%d caracteres A-Z a-z 0-9 _ -.",
+                  CM_CHANNEL_MAX_LEN);
+      return false;
+   }
+   // El emparejamiento supone una copia por posicion Master. En una cuenta de
+   // compensacion dos copias del mismo simbolo se funden en una posicion con
+   // el volumen sumado, y entonces no hay nada que emparejar: el EA avisaria
+   // de copias faltantes y de ambiguedades para siempre.
+   if(!InpAllowNettingAccount &&
+      (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)
+         !=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      Print("[CM SLAVE] La cuenta Slave no es de cobertura: el emparejamiento una copia "
+            "por posicion no es valido en compensacion. Use InpAllowNettingAccount "
+            "si aun asi quiere arrancar.");
       return false;
    }
    if(Trim(InpPortfolioAlias)=="")
@@ -4940,8 +5183,9 @@ bool Validate()
       Print("[CM SLAVE] InpTelegramSendsPerCycle debe estar entre 1 y 10.");
       return false;
    }
-   // Cada envio bloquea hasta InpTelegramTimeoutMs. Con el backoff tras fallo,
-   // un ciclo largo deja de repetirse cada segundo.
+   // Cada envio bloquea hasta InpTelegramTimeoutMs. El tope sube respecto a la
+   // v1.17 porque el timeout corto convertia una respuesta lenta en un fallo;
+   // con el backoff, un ciclo largo deja de repetirse cada segundo.
    if(InpTelegramSendsPerCycle*InpTelegramTimeoutMs>15000)
    {
       Print("[CM SLAVE] InpTelegramSendsPerCycle por InpTelegramTimeoutMs no puede pasar de 15000 ms.");
@@ -4967,6 +5211,11 @@ bool Validate()
    if(InpMasterOfflineConfirmSeconds<0 || InpSlaveOfflineConfirmSeconds<0)
    {
       Print("[CM SLAVE] Los tiempos de confirmacion de desconexion no pueden ser negativos.");
+      return false;
+   }
+   if(InpLinkRecoverySeconds<0 || InpLinkRecoverySeconds>300)
+   {
+      Print("[CM SLAVE] InpLinkRecoverySeconds debe estar entre 0 y 300.");
       return false;
    }
    if(InpEmptyMasterConfirmSeconds<0)
@@ -5008,6 +5257,17 @@ bool Validate()
    }
    return BuildConfig();
 }
+// Cada cierre genera varias transacciones y muchas no cambian el estado que se
+// compara. Reaccionar solo a las relevantes evita releer los snapshots decenas
+// de veces por segundo en una cuenta activa.
+bool TransactionMatters(const ENUM_TRADE_TRANSACTION_TYPE type)
+{
+   return type==TRADE_TRANSACTION_ORDER_ADD ||
+          type==TRADE_TRANSACTION_ORDER_UPDATE ||
+          type==TRADE_TRANSACTION_ORDER_DELETE ||
+          type==TRADE_TRANSACTION_DEAL_ADD ||
+          type==TRADE_TRANSACTION_POSITION;
+}
 int OnInit()
 {
    if(!Validate())return INIT_PARAMETERS_INCORRECT;
@@ -5019,9 +5279,12 @@ int OnInit()
                   "Use un identificador distinto por grafico.",InpSlaveID);
       return INIT_PARAMETERS_INCORRECT;
    }
+   g_trade.SetAsyncMode(false);
+   g_trade.LogLevel(LOG_LEVEL_ERRORS);
    // Antes del primer ciclo: si un problema seguia avisado al apagar, hay que
    // reconocerlo para poder darlo por resuelto en vez de avisarlo de nuevo.
    LoadAlertState();
+   LoadTgQueue();
    // El aviso de arranque sale en el primer ciclo, cuando ya hay snapshots
    // leidos que resumir.
    g_send_startup=InpSendStartupNotice;
@@ -5040,18 +5303,17 @@ void OnDeinit(const int reason)
    // cambiado en este ciclo: las marcas de tiempo si lo han hecho.
    g_alerts_dirty=true;
    SaveAlertState();
+   g_tg_queue_dirty=true;
+   SaveTgQueue();
    // El testigo se suelta en el acto: una recompilacion vuelve a OnInit de
    // inmediato y no debe encontrarse a si misma.
    ReleaseInstanceLock();
    Comment("");
 }
 void OnTimer(){Cycle();}
-// Sustituto de OnTradeTransaction: un cambio real en la cuenta Slave se evalua
-// al instante, y una cotizacion que no cambia nada no cuesta mas que una
-// pasada por la lista de operaciones.
-void OnTick()
+void OnTradeTransaction(const MqlTradeTransaction &t,const MqlTradeRequest &r,const MqlTradeResult &x)
 {
-   if(SlaveStateSignature()==g_last_state)
+   if(!TransactionMatters(t.type))
       return;
    Cycle();
 }

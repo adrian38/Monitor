@@ -1,7 +1,7 @@
 # Port MT4 de Master y Slave
 
-`CopyMonitor_Master_MT4_v1_01_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_05_MULTI.mq4`
-son la traducción a MQL4 del Master MT5 v1.15 y del Slave MT5 v1.25. Conservan
+`CopyMonitor_Master_MT4_v1_02_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_06_MULTI.mq4`
+son la traducción a MQL4 del Master MT5 v1.16 y del Slave MT5 v1.26. Conservan
 el esquema de snapshot, el emparejamiento, los mensajes de Telegram y los
 límites de automatización. Lo que cambia es la API del terminal, no el
 contrato. Las decisiones de protocolo siguen en
@@ -10,7 +10,7 @@ contrato. Las decisiones de protocolo siguen en
 
 ## Interoperabilidad
 
-El snapshot es el mismo fichero, el mismo esquema `3` y los mismos códigos de
+El snapshot es el mismo fichero, el mismo esquema `4` y los mismos códigos de
 tipo, así que las cuatro combinaciones funcionan: Master MT4 con Slave MT5,
 Master MT5 con Slave MT4 y los dos pares homogéneos. Eso es posible porque los
 códigos de MT4 y MT5 coinciden en todo lo que el Master publica:
@@ -110,7 +110,7 @@ Para compilar, el MetaEditor de MT4 acepta un fuente fuera del directorio de
 datos y no hace falta `/inc` porque ninguno de los dos usa includes:
 
 ```
-metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_05_MULTI.mq4" /log:"<log>"
+metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_06_MULTI.mq4" /log:"<log>"
 ```
 
 El código de salida no distingue el éxito: hay que leer la línea `Result:` del

@@ -36,6 +36,11 @@ cuatro casos los datos que habría que comparar son una foto del pasado, y
 corregir contra el pasado es peor que no corregir. Ver
 [robustness.md](robustness.md).
 
+La automatización tampoco se habilita con identidad ambigua: todos los owners
+deben tener comentario propietario no vacío y cuenta Master esperada. Con una
+de esas dos piezas ausente el EA sólo puede arrancar si todas las correcciones
+automáticas están desactivadas.
+
 Una copia que existe con **otro volumen** tampoco se corrige: se avisa como
 `POSVOL` o `PVOL` y se deja en manos del usuario. El Slave no cambia nunca el
 volumen de una posición, y ajustar el precio de una pendiente cuyo tamaño ya no
@@ -50,6 +55,8 @@ Antes de enviar nada se exige, en este orden:
 
 - permiso de trading del terminal, del EA en el gráfico y de la cuenta;
 - símbolo permitido por los filtros de la instancia y disponible en el terminal;
+- en MT5, datos del símbolo sincronizados con el servidor; el mero estado
+  `TERMINAL_CONNECTED` no garantiza que la cotización ya esté al día;
 - modo de trading del símbolo compatible con el sentido de la orden;
 - volumen dentro del rango del bróker antes de cualquier recorte: crear fuera
   de rango significaría copiar un tamaño distinto del pedido por el Master;
@@ -79,6 +86,34 @@ canal **y** que resulta emparejable con la orden Master. Si no lo es, se avisa
 que el emparejamiento tenga éxito: reintentar duplicaría la pendiente en cada
 ventana. La comparación de valores de una pendiente emparejada depende de
 `InpMonitorPendingOrders`.
+
+Un timeout o una pérdida de conexión tras `OrderSend` no demuestra que el
+servidor no aceptara la orden. En ese caso se busca una única pendiente viva,
+propia y compatible; si aparece se adopta como éxito, y si el resultado sigue
+siendo incierto se bloquea el ticket Master. Nunca se reenvía automáticamente
+una creación cuyo resultado pudo llegar al servidor.
+
+## Errores habituales del servidor
+
+Las listas oficiales de MT5 y MT4 incluyen precio, stops o volumen inválidos;
+mercado cerrado o sin cotizaciones; permisos deshabilitados; margen
+insuficiente; orden congelada o bloqueada; modo de llenado inválido; demasiadas
+peticiones; y límites de órdenes o volumen. CopyMonitor los trata en tres
+capas:
+
+- evita antes del envío lo que el terminal permite comprobar: permisos,
+  símbolo y sentido, sincronización MT5, cotización, rango/paso de volumen,
+  escala y distancias de precio, freeze level, sesión y cupo horario;
+- mercado cerrado, trading deshabilitado y falta de cotización pasan a espera
+  acotada; el llenado inválido MT5 se reintenta una sola vez con `RETURN`;
+- los límites dinámicos del servidor, margen, bloqueos y demás rechazos se
+  informan con su `retcode`/`GetLastError` real y quedan sujetos al
+  cortacircuitos horario. No se inventa éxito ni se genera un bucle rápido de
+  reintentos.
+
+Una comprobación previa no elimina la carrera entre comprobar y enviar: el
+servidor sigue siendo la autoridad final. Por eso la verificación posterior y
+el tratamiento especial del resultado indeterminado son parte del contrato.
 
 El estado interno —ventanas de persistencia, avisos cerrados y bloqueos de
 creación— caduca tras una hora sin usarse, para que una sesión larga no acumule

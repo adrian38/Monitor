@@ -14,8 +14,9 @@ sus colecciones tal como estaban y el EA las publica cada segundo. El snapshot
 era fresco, el Slave lo daba por bueno y no avisaba de nada mientras el Master
 podía llevar cuarenta minutos sin recibir un solo cambio. Era el único fallo
 indistinguible del funcionamiento normal. El esquema 4 añade `connected` al
-`META`; tras `InpMasterOfflineConfirmSeconds` se emite `MOFF` como `CRÍTICO` y
-se suspenden comparación y correcciones. Una microdesconexión no cuenta.
+`META`. Comparación y correcciones se suspenden desde la primera lectura con
+`connected=0`; `InpMasterOfflineConfirmSeconds` sólo retrasa el `MOFF`
+`CRÍTICO` para no avisar por una microdesconexión.
 
 **La ausencia de datos sostenida.** `InpNotifySnapshotProblems` sigue
 gobernando la falta transitoria, pero pasados `InpStaleAlertSeconds` el aviso
@@ -26,8 +27,15 @@ entero a un Master muerto. Con el valor por defecto, antes el EA callaba.
 **El propio terminal Slave desconectado.** `PositionsTotal()` devuelve la foto
 cacheada, así que el EA comparaba contra el pasado y podía intentar
 correcciones que fallaban con un retcode incomprensible. Ahora `SlaveLinkOk()`
-confirma la caída durante `InpSlaveOfflineConfirmSeconds`, emite `SOFF` y
-suspende el ciclo entero; los snapshots se siguen leyendo sólo para el panel.
+suspende el ciclo desde el primer estado desconectado;
+`InpSlaveOfflineConfirmSeconds` sólo confirma el `SOFF`. Los snapshots se
+siguen leyendo para el panel.
+
+Al volver la conexión tampoco se confía en la primera foto cacheada. Tanto el
+enlace Slave como cada canal Master deben permanecer sanos durante
+`InpLinkRecoverySeconds` antes de reanudar comparación o correcciones. Cualquier
+snapshot ausente, parcial, obsoleto, cruzado, de otra cuenta o desconectado
+reinicia esa confianza y también la confirmación continua de Master vacío.
 
 En los tres casos se suspende en lugar de seguir comparando: actuar sobre datos
 que se sabe congelados es peor que no actuar, y el usuario recibe el aviso.
@@ -63,14 +71,20 @@ Además, lo que se perdió por cola llena ya no desaparece sin más. `AlertOnce`
 descarte los borraba para siempre: `TGDROP` es un `PersistAlert` que cuenta
 cuántos avisos no llegaron y se resuelve cuando la cola vuelve a vaciarse.
 
-## El ciclo no espera a la red
+## La detección precede a la espera de red
 
 Hasta la v1.24 `Tg()` publicaba en línea cuando la cola estaba vacía, y cada
 POST bloquea hasta `InpTelegramTimeoutMs`. Con una tormenta de avisos el ciclo
 se alargaba justo cuando más rápido había que detectar. Ahora todo aviso entra
-en la cola y sale en `TgFlush`, que ya estaba acotado por
-`InpTelegramSendsPerCycle`. La cola sigue siendo FIFO estricta, así que el
-orden `ALERTA` → `RESUELTO` se conserva.
+en la cola y sale en `TgFlush`, al final del ciclo y acotado por
+`InpTelegramSendsPerCycle`. `WebRequest` sigue siendo síncrono, de modo que el
+temporizador puede tardar hasta el timeout por envío, pero la detección y las
+correcciones de ese ciclo ya han terminado. La cola sigue siendo FIFO estricta,
+así que el orden `ALERTA` → `RESUELTO` se conserva.
+
+La cola se persiste en `CM_TGQUEUE_<SlaveID>.txt` cuando también se persiste el
+estado de avisos. Así, un reinicio no pierde un `ALERTA` o `RESUELTO` que ya se
+había generado pero aún no había llegado a Telegram.
 
 ## Publicación del snapshot
 
@@ -91,6 +105,10 @@ orden `ALERTA` → `RESUELTO` se conserva.
 - Una lectura puede coincidir con la reescritura. El contenido parcial se
   detecta siempre por contadores y por la marca `END`, así que se reintenta
   hasta tres veces dentro del mismo ciclo antes de declarar que no hay datos.
+- El parser exige el orden lineal `META`, `POS*`, `ORD*`, `END`, un único
+  encabezado y fin, tipos de registro conocidos y valores básicos válidos
+  (ticket, símbolo, tipo, volumen, precio, totales y conexión). Una línea
+  desconocida o fuera de orden invalida la foto en vez de aceptar media verdad.
 - Se distingue el tipo de problema: ausencia o lectura parcial es transitoria y
   la gobierna `InpNotifySnapshotProblems`; un esquema desconocido o un canal
   cruzado son contrato roto y se avisan **siempre** como `CRÍTICO`. Un Master
@@ -163,6 +181,31 @@ Dos cambios pueden rechazar una configuración que antes arrancaba:
 `InpVolumeToleranceSteps` se respeta tal cual: antes un cero se trataba como
 uno, lo que contradecía la documentación. Con cero la comparación de volumen es
 exacta salvo el ruido de coma flotante.
+
+La v1.26/v1.06 endurece además la identidad de cualquier instancia que vaya a
+corregir: cada owner necesita comentario no vacío y cuenta Master esperada. Un
+comentario vacío equivale a reclamar todas las órdenes y no es una propiedad
+segura para crear, modificar o borrar. Esas dos condiciones siguen siendo
+opcionales en un Slave puramente observador.
+
+`InpSlaveID` sólo admite de 1 a 32 caracteres `A-Z a-z 0-9 _ -`; no se sanea
+en silencio porque dos IDs distintos podían colapsar en los mismos ficheros y
+variables globales. La exclusión de instancia mantiene un fichero exclusivo en
+`FILE_COMMON`, que cubre terminales MT4 y MT5 distintos, y dentro de cada
+terminal usa adquisición atómica con token y latido separado. `OnDeinit` libera
+únicamente el token que posee, por lo que un segundo EA cuyo `OnInit` falla
+nunca puede borrar el lock del primero. El plazo de abandono incluye el peor
+bloqueo configurado de Telegram y los reintentos de lectura.
+
+Cada Master mantiene además abierto en exclusiva
+`CopyMonitorMulti\CM_<channel>.lock` durante toda su vida. MT4 y MT5 comparten
+`FILE_COMMON`, así que un segundo publicador del mismo canal en la máquina no
+arranca y no puede alternar dos cuentas bajo un solo nombre.
+
+Si el envío de una pendiente devuelve timeout, pérdida de conexión o error
+común, el resultado es indeterminado: antes de decidir se busca una única orden
+propia compatible. Si no puede demostrarse éxito o fracaso, el ticket Master
+queda bloqueado para revisión manual; reintentar a ciegas podría duplicarlo.
 
 ## Avisos
 
