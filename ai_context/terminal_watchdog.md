@@ -1,5 +1,20 @@
 # Vigilancia de terminal offline (MT4)
 
+## Por qué no hay un vigilante MT5
+
+Desde la v1.25 del Slave MT5 y la v1.05 del MT4 no hace falta un EA aparte para
+esto, y por eso no se escribió:
+
+- el Master publica su estado de conexión en el `META` (esquema 4), así que el
+  Slave avisa con `MOFF` cuando el terminal Master pierde el enlace;
+- el Slave vigila su propia conexión y avisa con `SOFF`;
+- el latido (`InpHeartbeatHours`) y el aviso de arranque cubren el caso que un
+  vigilante de conexión nunca podría cubrir: que el EA se haya descargado, que
+  AutoTrading esté apagado o que el terminal se haya cerrado.
+
+El vigilante MT4 sigue teniendo sentido para un terminal que no participa en
+ningún canal y al que sólo se quiere mirar la conexión.
+
 `CopyMonitor_Watchdog_MT4_v1_00.mq4` es un EA independiente para MetaTrader 4.
 No lee ni escribe el snapshot compartido, no conoce canales ni perfiles y nunca
 opera la cuenta: sólo observa la conexión del terminal y avisa por Telegram.

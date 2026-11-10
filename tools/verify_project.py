@@ -9,14 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_24_MULTI.mq5",
+    "master": ROOT / "CopyMonitor_Master_MT5_v1_15_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_25_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
-    "master": ROOT / "CopyMonitor_Master_MT4_v1_00_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_04_MULTI.mq4",
+    "master": ROOT / "CopyMonitor_Master_MT4_v1_01_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_05_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -79,8 +79,8 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
         require(token in master, f"master: protocol token missing: {token}", failures)
 
     require(
-        "#define CM_SNAPSHOT_SCHEMA   3" in master,
-        "master: published schema must be 3",
+        "#define CM_SNAPSHOT_SCHEMA   4" in master,
+        "master: published schema must be 4",
         failures,
     )
     require(
@@ -99,11 +99,25 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
         "master: schema 3 must publish the pending stop-limit price",
         failures,
     )
+    # Schema 4 appends the Master terminal link state to the META. Without it a
+    # disconnected Master keeps publishing a fresh snapshot of frozen data and
+    # the Slave cannot tell "everything matches" from "I have been blind".
+    require(
+        "bool TerminalConnected(" in master
+        and "IntegerToString(TerminalConnected() ? 1 : 0)" in master,
+        "master: schema 4 must publish the terminal link state",
+        failures,
+    )
 
     for token in ('p[0]=="META"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
         require(token in slave, f"slave: protocol reader missing: {token}", failures)
 
-    for token in ('if(token=="1") return 1;', 'if(token=="2") return 2;', 'if(token=="3") return 3;'):
+    for token in (
+        'if(token=="1") return 1;',
+        'if(token=="2") return 2;',
+        'if(token=="3") return 3;',
+        'if(token=="4") return 4;',
+    ):
         require(token in slave, f"slave: schema reader missing: {token}", failures)
     require(
         "SnapshotSchema(p[1])" in slave,
@@ -302,7 +316,99 @@ ALERT_KEY_FAMILIES = (
     '"POSEXTRA|"',
     '"ORDMISS|"',
     '"PEARLY|"',
+    # A copy that exists with the wrong size is not a missing copy, and it
+    # must never be answered by creating a second one.
+    '"POSVOL|"',
+    '"PVOL|"',
 )
+
+
+# What the v1.25 / v1.05 robustness pass added. Each of these closes a way for
+# the monitor to go silent, or to act on something it should not have touched,
+# so none of them may quietly disappear.
+BLIND_SPOT_TOKENS = (
+    # A Master that keeps publishing while disconnected from its server.
+    "CM_LINK_DOWN",
+    "CM_LINK_UNKNOWN",
+    'PersistAlert("MOFF|"',
+    'ResolveAlert("MOFF|"',
+    "InpMasterOfflineConfirmSeconds",
+    # A sustained absence of data is always reported, whatever the switch says.
+    "InpStaleAlertSeconds",
+    # The Slave terminal itself can be the one that is offline.
+    "bool SlaveLinkOk(",
+    'PersistAlert("SOFF|"',
+    "InpSlaveOfflineConfirmSeconds",
+    # The snapshot must come from the account the user expects.
+    "LoadExpectedAccounts(",
+    'PersistAlert("MACCOUNT|"',
+    # Telegram is not the only way out, and a dropped notice is reported.
+    "void PushFallback(",
+    "SendNotification(",
+    "InpEnablePushFallback",
+    "void CheckDroppedAlerts(",
+    '"TGDROP|"',
+    # The monitor says it is alive instead of leaving silence ambiguous.
+    "void SendStartupNotice(",
+    "void Heartbeat(",
+    "InpHeartbeatHours",
+    # A copy with the wrong size is diagnosed as such, and never duplicated.
+    "MatchPosIgnoringVolume(",
+    "MatchOrdIgnoringVolume(",
+    "PosCompatibleIgnoringVolume(",
+    "OrdCompatibleIgnoringVolume(",
+    "PendingCouldBePosition(o,m,g_unpaired_pos[i],false)",
+    # An extra Slave position is the costliest case: it cannot depend on the
+    # profile any more.
+    "InpAlertExtraPositions",
+    "AlertExtraPositions(",
+    # The only destructive action needs the Master to have been empty for a
+    # while: a freshly reconfigured Master publishes the very same zero.
+    "TrackChannelSnapshot(",
+    "MasterEmptyConfirmed(",
+    "InpEmptyMasterConfirmSeconds",
+    # A copier and a monitor undoing each other must not ping-pong forever.
+    "AutoActionAllowed(",
+    "RegisterAutoAction(",
+    "InpMaxAutoActionsPerHour",
+    # A price from another market can pass the broker checks and still be absurd.
+    "PriceScaleSane(",
+    "InpMaxPriceDeviationPercent",
+    # Margin is a reason a copy never arrives, and it deserves to be named.
+    "void CheckMarginLevel(",
+    "InpMinMarginLevelPercent",
+    # Two instances sharing an id would overwrite each other's alert state.
+    "ClaimInstanceLock(",
+    "ReleaseInstanceLock(",
+    # That state is written aside and renamed, like the snapshot.
+    "AlertStateTemp(",
+    # One tolerance in points for every symbol is either far too much or nothing.
+    "EntryTolPrice(",
+    "StopTolPrice(",
+    "PendingTolPrice(",
+    "InpSymbolTolerances",
+    # Ownership can survive a broker that rewrites the comment.
+    "CommentOwnedBy(",
+    "InpOwnerMatchMode",
+    # Clock skew must not freeze the watch in silence.
+    "InpClockSkewToleranceSeconds",
+)
+
+
+def check_blind_spots(name: str, slave: str, extra: tuple[str, ...], failures: list[str]) -> None:
+    for token in BLIND_SPOT_TOKENS + extra:
+        require(token in slave, f"{name}: robustness contract missing: {token}", failures)
+
+    # Every notice is queued and leaves in TgFlush. Posting inline tied the
+    # cycle length to api.telegram.org, so a storm of alerts slowed detection
+    # down exactly when it had to be fast.
+    body = function_body(slave, "bool Tg(const string msg)")
+    require(body is not None, f"{name}: Tg missing", failures)
+    require(
+        body is not None and "TgEnqueue(" in body and "TgPost(" not in body,
+        f"{name}: a notice must be queued, never posted inside the cycle",
+        failures,
+    )
 
 
 def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
@@ -421,8 +527,8 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
         require(token in master, f"master mt4: protocol token missing: {token}", failures)
 
     require(
-        "#define CM_SNAPSHOT_SCHEMA   3" in master,
-        "master mt4: published schema must be 3",
+        "#define CM_SNAPSHOT_SCHEMA   4" in master,
+        "master mt4: published schema must be 4",
         failures,
     )
     require(
@@ -442,11 +548,22 @@ def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
         "master mt4: the schema 3 stop-limit field must still be published as zero",
         failures,
     )
+    require(
+        "bool TerminalConnected(" in master
+        and "IntegerToString(TerminalConnected() ? 1 : 0)" in master,
+        "master mt4: schema 4 must publish the terminal link state",
+        failures,
+    )
 
     for token in ('p[0]=="META"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
         require(token in slave, f"slave mt4: protocol reader missing: {token}", failures)
 
-    for token in ('if(token=="1") return 1;', 'if(token=="2") return 2;', 'if(token=="3") return 3;'):
+    for token in (
+        'if(token=="1") return 1;',
+        'if(token=="2") return 2;',
+        'if(token=="3") return 3;',
+        'if(token=="4") return 4;',
+    ):
         require(token in slave, f"slave mt4: schema reader missing: {token}", failures)
     require(
         "SnapshotSchema(p[1])" in slave,
@@ -673,6 +790,18 @@ def main() -> int:
         failures,
     )
     check_alert_lifecycle("slave", source["slave"], failures)
+    check_blind_spots(
+        "slave",
+        source["slave"],
+        (
+            # MQL5 exposes both of these; the MT4 port cannot.
+            "ACCOUNT_MARGIN_MODE",
+            "InpAllowNettingAccount",
+            "SYMBOL_TRADE_FREEZE_LEVEL",
+            "PositionNotFrozen(",
+        ),
+        failures,
+    )
     check_tunables(source, failures)
 
     check_mt4_protocol(mt4["master"], mt4["slave"], failures)
@@ -687,6 +816,9 @@ def main() -> int:
         failures,
     )
     check_alert_lifecycle("slave mt4", mt4["slave"], failures)
+    # MT4 accounts are always hedging and the freeze distance already had its
+    # own check, so the MQL5-only tokens do not apply here.
+    check_blind_spots("slave mt4", mt4["slave"], ("IsConnected()",), failures)
     check_tunables(mt4, failures)
 
     # The channel rule is shared by every EA that names the snapshot file,

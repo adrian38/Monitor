@@ -1,20 +1,28 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Master_MT5_v1_14_MULTI.mq5                           |
+//| CopyMonitor_Master_MT5_v1_15_MULTI.mq5                           |
 //| Publishes open positions + pending orders for CopyMonitor Slave. |
 //| No trading actions.                                               |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.14"
-#property description "CopyMonitor Master MT5 v1.14 MULTI"
+#property version   "1.15"
+#property description "CopyMonitor Master MT5 v1.15 MULTI"
 
-// Esquema de snapshot publicado. El lector Slave acepta 1, 2 y 3.
-//   META|3|written|channel|nick|account|open_total|pending_total|broker
+// Esquema de snapshot publicado. El lector Slave acepta 1, 2, 3 y 4.
+//   META|4|written|channel|nick|account|open_total|pending_total|broker|connected
 //   POS|ticket|symbol|type|volume|open_price|sl|tp
 //   ORD|ticket|symbol|type|volume|open_price|sl|tp|stoplimit
 //   END
 // El campo stoplimit del registro ORD aparece en el esquema 3; un lector de
 // esquema 1 o 2 lo ignora porque los campos nuevos van siempre al final.
-#define CM_SNAPSHOT_SCHEMA   3
+//
+// El campo connected del META aparece en el esquema 4 y vale 1 cuando el
+// terminal Master mantiene la conexion con su servidor de trading. Sin el, un
+// Master desconectado seguia publicando cada segundo una foto perfecta de las
+// posiciones que habia cuando se corto el enlace: el snapshot era fresco, el
+// Slave lo daba por bueno y no habia forma de distinguir "todo cuadra" de
+// "llevo cuarenta minutos ciego". Es el unico fallo que se confunde con el
+// funcionamiento normal, asi que viaja en el propio snapshot.
+#define CM_SNAPSHOT_SCHEMA   4
 #define CM_CHANNEL_MAX_LEN   32
 
 input group "===== MASTER IDENTITY ====="
@@ -154,6 +162,14 @@ bool IsStopLimit(const ENUM_ORDER_TYPE t)
    return t==ORDER_TYPE_BUY_STOP_LIMIT || t==ORDER_TYPE_SELL_STOP_LIMIT;
 }
 
+// Conexion del terminal Master con su servidor de trading. Es el dato que el
+// Slave no puede deducir: un terminal desconectado conserva las colecciones
+// tal como estaban y las publica como si siguieran vivas.
+bool TerminalConnected()
+{
+   return TerminalInfoInteger(TERMINAL_CONNECTED)!=0;
+}
+
 void AddRow(string &rows[],const string row)
 {
    int n=ArraySize(rows);
@@ -247,7 +263,8 @@ string BuildSnapshot(int &open_count,int &pending_count)
       Safe(InpChannelID)+"|"+Safe(InpAccountNick)+"|"+
       StringFormat("%I64d",(long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+
       IntegerToString(open_count)+"|"+IntegerToString(pending_count)+"|"+
-      Safe(AccountInfoString(ACCOUNT_COMPANY))+"\r\n";
+      Safe(AccountInfoString(ACCOUNT_COMPANY))+"|"+
+      IntegerToString(TerminalConnected() ? 1 : 0)+"\r\n";
 
    for(int i=0;i<open_count;i++)
       text+=pos_rows[i];
@@ -345,10 +362,11 @@ void Panel()
       return;
    }
 
-   string s="COPYMONITOR MASTER v1.14 MULTI\n";
+   string s="COPYMONITOR MASTER v1.15 MULTI\n";
    s+="Nick: "+InpAccountNick+"\nChannel: "+InpChannelID+"\n";
    s+="Broker: "+AccountInfoString(ACCOUNT_COMPANY)+"\n";
    s+="Snapshot schema: "+IntegerToString(CM_SNAPSHOT_SCHEMA)+"\n";
+   s+="Terminal: "+(TerminalConnected() ? "CONECTADO" : "SIN CONEXIÓN")+"\n";
    s+="Open: "+IntegerToString(g_last_open)+"\n";
    s+="Pending: "+IntegerToString(g_last_pending)+"\n";
    s+="Include symbols: "+(ArraySize(g_include_symbols)==0 ? "ALL" : InpSymbolsFilter)+"\n";

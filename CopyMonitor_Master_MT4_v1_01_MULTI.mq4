@@ -1,23 +1,29 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Master_MT4_v1_00_MULTI.mq4                           |
+//| CopyMonitor_Master_MT4_v1_01_MULTI.mq4                           |
 //| Publishes open positions + pending orders for CopyMonitor Slave. |
 //| No trading actions.                                               |
-//| Port MT4 del Master MT5 v1.14 MULTI: mismo esquema, mismo        |
+//| Port MT4 del Master MT5 v1.15 MULTI: mismo esquema, mismo        |
 //| directorio comun y mismos codigos de tipo, de modo que un Master |
 //| MT4 puede alimentar a un Slave MT4 o MT5 indistintamente.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.00"
-#property description "CopyMonitor Master MT4 v1.00 MULTI"
+#property version   "1.01"
+#property description "CopyMonitor Master MT4 v1.01 MULTI"
 
-// Esquema de snapshot publicado. El lector Slave acepta 1, 2 y 3.
-//   META|3|written|channel|nick|account|open_total|pending_total|broker
+// Esquema de snapshot publicado. El lector Slave acepta 1, 2, 3 y 4.
+//   META|4|written|channel|nick|account|open_total|pending_total|broker|connected
 //   POS|ticket|symbol|type|volume|open_price|sl|tp
 //   ORD|ticket|symbol|type|volume|open_price|sl|tp|stoplimit
 //   END
 // El campo stoplimit del registro ORD aparece en el esquema 3; un lector de
 // esquema 1 o 2 lo ignora porque los campos nuevos van siempre al final.
-#define CM_SNAPSHOT_SCHEMA   3
+//
+// El campo connected del META aparece en el esquema 4 y vale 1 cuando el
+// terminal Master mantiene la conexion con su servidor. Sin el, un Master
+// desconectado seguia publicando cada segundo la ultima foto conocida de sus
+// operaciones: el snapshot era fresco, el contenido era pasado, y no habia
+// forma de distinguir "todo cuadra" de "llevo cuarenta minutos ciego".
+#define CM_SNAPSHOT_SCHEMA   4
 #define CM_CHANNEL_MAX_LEN   32
 
 // El campo type viaja como numero y lo interpreta un Slave que puede ser MT5.
@@ -251,6 +257,14 @@ string BuildBody(int &open_count,int &pending_count)
    return body;
 }
 
+// Conexion del terminal Master con su servidor. En MT4 la da IsConnected();
+// es el dato que el Slave no puede deducir, porque un terminal desconectado
+// conserva su lista de operaciones tal como estaba.
+bool TerminalConnected()
+{
+   return IsConnected();
+}
+
 string BuildSnapshot(const string body,const int open_count,const int pending_count)
 {
    string text=
@@ -259,7 +273,8 @@ string BuildSnapshot(const string body,const int open_count,const int pending_co
       Safe(InpChannelID)+"|"+Safe(InpAccountNick)+"|"+
       IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+
       IntegerToString(open_count)+"|"+IntegerToString(pending_count)+"|"+
-      Safe(AccountInfoString(ACCOUNT_COMPANY))+"\r\n";
+      Safe(AccountInfoString(ACCOUNT_COMPANY))+"|"+
+      IntegerToString(TerminalConnected() ? 1 : 0)+"\r\n";
 
    text+=body;
    text+="END\r\n";
@@ -353,10 +368,11 @@ void Panel()
       return;
    }
 
-   string s="COPYMONITOR MASTER MT4 v1.00 MULTI\n";
+   string s="COPYMONITOR MASTER MT4 v1.01 MULTI\n";
    s+="Nick: "+InpAccountNick+"\nChannel: "+InpChannelID+"\n";
    s+="Broker: "+AccountInfoString(ACCOUNT_COMPANY)+"\n";
    s+="Snapshot schema: "+IntegerToString(CM_SNAPSHOT_SCHEMA)+"\n";
+   s+="Terminal: "+(TerminalConnected() ? "CONECTADO" : "SIN CONEXION")+"\n";
    s+="Open: "+IntegerToString(g_last_open)+"\n";
    s+="Pending: "+IntegerToString(g_last_pending)+"\n";
    s+="Include symbols: "+(ArraySize(g_include_symbols)==0 ? "ALL" : InpSymbolsFilter)+"\n";

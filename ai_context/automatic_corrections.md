@@ -29,6 +29,21 @@ Si Copyix resuelve durante la espera, se cancela el candidato y se envía
 reintentos en cada ciclo. Los avisos de corrección no son opcionales: los
 interruptores `InpNotifyDeleteSuccess` e `InpNotifyDeleteFailure` desaparecieron.
 
+Ninguna de las cuatro se intenta mientras el Master esté desconectado de su
+servidor, el snapshot lleve sin llegar más de la cuenta, la cuenta Master no
+sea la esperada o el propio terminal Slave haya perdido la conexión. En esos
+cuatro casos los datos que habría que comparar son una foto del pasado, y
+corregir contra el pasado es peor que no corregir. Ver
+[robustness.md](robustness.md).
+
+Una copia que existe con **otro volumen** tampoco se corrige: se avisa como
+`POSVOL` o `PVOL` y se deja en manos del usuario. El Slave no cambia nunca el
+volumen de una posición, y ajustar el precio de una pendiente cuyo tamaño ya no
+es el pedido afianzaría una copia equivocada. Lo importante es que esa copia
+cuenta como emparejada: antes contaba como ausente y la creación automática
+añadía una segunda orden junto a la que ya existía. Ver
+[pending_matching.md](pending_matching.md).
+
 ## Comprobaciones previas
 
 Antes de enviar nada se exige, en este orden:
@@ -38,8 +53,13 @@ Antes de enviar nada se exige, en este orden:
 - modo de trading del símbolo compatible con el sentido de la orden;
 - volumen dentro del rango del bróker antes de cualquier recorte: crear fuera
   de rango significaría copiar un tamaño distinto del pedido por el Master;
+- escala de precios coherente con el símbolo Slave: un desvío mayor que
+  `InpMaxPriceDeviationPercent` entre el precio del Master y el precio actual
+  delata una equivalencia que apunta a otro instrumento;
 - distancia mínima del bróker para el precio de entrada y para SL y TP, con
-  precios actuales disponibles.
+  precios actuales disponibles;
+- distancia de congelación del bróker antes de modificar o borrar;
+- cupo de acciones automáticas de la hora para ese canal.
 
 Si el mercado del símbolo está cerrado, el problema entra en espera: un único
 `BLOQUEADO`, sin repetir el recordatorio del problema, con reintento cada

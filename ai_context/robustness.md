@@ -3,6 +3,75 @@
 Decisiones tomadas para que un fallo del entorno no deje al monitor mudo ni le
 haga actuar a ciegas. Son contrato: no se deben revertir sin sustituirlas.
 
+## Lo que el Slave no puede deducir
+
+Hasta la v1.24 el monitor confiaba en una premisa que nadie comprobaba: que un
+snapshot fresco contenía la realidad del Master. No era cierto en tres casos, y
+los tres se arreglan en la v1.25 del Slave MT5 y la v1.05 del Slave MT4.
+
+**El Master desconectado de su servidor.** Un terminal sin conexión conserva
+sus colecciones tal como estaban y el EA las publica cada segundo. El snapshot
+era fresco, el Slave lo daba por bueno y no avisaba de nada mientras el Master
+podía llevar cuarenta minutos sin recibir un solo cambio. Era el único fallo
+indistinguible del funcionamiento normal. El esquema 4 añade `connected` al
+`META`; tras `InpMasterOfflineConfirmSeconds` se emite `MOFF` como `CRÍTICO` y
+se suspenden comparación y correcciones. Una microdesconexión no cuenta.
+
+**La ausencia de datos sostenida.** `InpNotifySnapshotProblems` sigue
+gobernando la falta transitoria, pero pasados `InpStaleAlertSeconds` el aviso
+es obligatorio. El razonamiento ya estaba escrito para el esquema roto —«un
+Master más nuevo no puede dejar la vigilancia parada en silencio»— y se aplica
+entero a un Master muerto. Con el valor por defecto, antes el EA callaba.
+
+**El propio terminal Slave desconectado.** `PositionsTotal()` devuelve la foto
+cacheada, así que el EA comparaba contra el pasado y podía intentar
+correcciones que fallaban con un retcode incomprensible. Ahora `SlaveLinkOk()`
+confirma la caída durante `InpSlaveOfflineConfirmSeconds`, emite `SOFF` y
+suspende el ciclo entero; los snapshots se siguen leyendo sólo para el panel.
+
+En los tres casos se suspende en lugar de seguir comparando: actuar sobre datos
+que se sabe congelados es peor que no actuar, y el usuario recibe el aviso.
+
+## Quién vigila al vigilante
+
+El EA que debería avisar de que ha muerto es precisamente el que ha muerto, así
+que el silencio era ambiguo. Dos añadidos lo resuelven sin inventar
+infraestructura:
+
+- `InpSendStartupNotice` envía un `VIGILANCIA ACTIVA` en el primer ciclo, con
+  el resumen por canal. Es la única forma de saber que Telegram funciona antes
+  de que haya un incidente real; el vigilante MT4 ya lo tenía.
+- `InpHeartbeatHours` repite ese resumen cada N horas. A partir de ahí, no
+  recibir nada deja de significar «todo bien» por omisión.
+
+## Telegram no puede ser el único camino
+
+Sin `api.telegram.org` en la whitelist de WebRequest todos los envíos fallan
+para siempre y sólo queda el panel, que nadie mira. `InpEnablePushFallback`
+añade `SendNotification`, que no depende de esa whitelist:
+
+- un `CRÍTICO` que no va a salir pronto —hay cola, o el backoff está en curso—
+  se duplica por push con su cabecera;
+- cada descarte por cola llena sale por push, como mucho uno cada
+  `InpMismatchReminderSeconds` para que una tormenta no genere una
+  notificación por mensaje perdido;
+- el latido y el aviso de arranque usan push cuando Telegram no está
+  configurado.
+
+Además, lo que se perdió por cola llena ya no desaparece sin más. `AlertOnce`,
+`AlertOnChange` y todos los `RESUELTO` se envían una sola vez, así que un
+descarte los borraba para siempre: `TGDROP` es un `PersistAlert` que cuenta
+cuántos avisos no llegaron y se resuelve cuando la cola vuelve a vaciarse.
+
+## El ciclo no espera a la red
+
+Hasta la v1.24 `Tg()` publicaba en línea cuando la cola estaba vacía, y cada
+POST bloquea hasta `InpTelegramTimeoutMs`. Con una tormenta de avisos el ciclo
+se alargaba justo cuando más rápido había que detectar. Ahora todo aviso entra
+en la cola y sale en `TgFlush`, que ya estaba acotado por
+`InpTelegramSendsPerCycle`. La cola sigue siendo FIFO estricta, así que el
+orden `ALERTA` → `RESUELTO` se conserva.
+
 ## Publicación del snapshot
 
 - El Master construye primero las filas `POS` y `ORD` y deriva de ellas los
@@ -26,7 +95,10 @@ haga actuar a ciegas. Son contrato: no se deben revertir sin sustituirlas.
   la gobierna `InpNotifySnapshotProblems`; un esquema desconocido o un canal
   cruzado son contrato roto y se avisan **siempre** como `CRÍTICO`. Un Master
   más nuevo que el Slave no puede dejar la vigilancia parada en silencio.
-- Se admite un segundo de adelanto del reloj al calcular la frescura.
+- El adelanto del reloj admitido es `InpClockSkewToleranceSeconds`, un segundo
+  por defecto. Era una constante, y con ella una sincronización NTP o dos
+  máquinas distintas dejaban el snapshot permanentemente «en el futuro» y la
+  vigilancia parada.
 
 ## Identificador de canal
 
@@ -48,6 +120,39 @@ Una configuración mal escrita detiene el arranque con un motivo en el log en
 lugar de degradarse en silencio: perfil desconocido, equivalencia incompleta,
 ticket no numérico, canal inválido, listas multi-master de distinta longitud o
 Telegram activado sin token.
+
+Desde la v1.25 el arranque se detiene además en cuatro casos nuevos:
+
+- **Cuenta de compensación.** El emparejamiento supone una copia por posición
+  Master, es decir cobertura. En netting dos copias del mismo símbolo se funden
+  en una posición con el volumen sumado y el modelo entero se cae: el EA
+  avisaría de copias faltantes y de ambigüedades para siempre.
+  `InpAllowNettingAccount` permite arrancar de todos modos. MT4 no necesita la
+  comprobación porque sus cuentas son siempre de cobertura.
+- **Instancia duplicada.** Dos Slave con el mismo `InpSlaveID` comparten
+  `CM_ALERTS_<id>.txt` y se lo pisan: el que escribe último borra los avisos
+  activos del otro, y con ellos sus `RESUELTO`. El testigo es una variable
+  global del terminal que se refresca cada ciclo y se suelta en `OnDeinit`; uno
+  que nadie refresca es de una instancia que ya no existe.
+- **Comentario propietario demasiado largo** (más de 31 caracteres). El port
+  MT4 ya lo comprobaba; el MT5 dejaba crear copias que nunca volvían a
+  reconocerse como propias.
+- **Modo de propiedad ambiguo.** Con `InpOwnerMatchMode` en `PREFIX` o
+  `CONTAINS`, dos comentarios distintos pueden reclamar la misma operación. Si
+  eso ocurre no hay propiedad que decidir, así que no se reparte por el orden
+  de la lista: se para.
+
+`InpExpectedMasterAccounts` es opcional y posicional con los canales. Sin él,
+cambiar el login del terminal Master conservando el canal dejaba al Slave
+vigilando otra cuenta sin decir una palabra; con él se emite `MACCOUNT` como
+`CRÍTICO` y se suspende la comparación. Una lista parcial se rechaza: el
+usuario creería estar vigilando lo que no está.
+
+`InpSymbolTolerances` declara excepciones `SIMBOLO,entrada,sltp,pendiente` a
+las tolerancias globales. Un único valor en puntos para toda la cuenta es o
+muchísimo o nada cuando conviven oro, índices y divisas, y una tolerancia
+demasiado estrecha no relaja nada: rompe el emparejamiento y convierte una
+copia correcta en una copia faltante permanente.
 
 Dos cambios pueden rechazar una configuración que antes arrancaba:
 
@@ -105,7 +210,11 @@ problemas estaban avisados, y `ResolveAlert` no encontraba la clave: el
 
 - Los avisos activos se guardan en `CopyMonitorMulti\CM_ALERTS_<InpSlaveID>.txt`
   dentro de la carpeta local del terminal, no en la común: el estado es de esta
-  instancia y dos Slave distintos no deben pisarse el fichero.
+  instancia y dos Slave distintos no deben pisarse el fichero. Que no se pisen
+  lo garantiza ahora el testigo de instancia, no la buena fe del usuario.
+- Se escribe en `.tmp` y se renombra sobre el destino, igual que el snapshot.
+  Truncar el fichero bueno y morir a mitad dejaba un estado de avisos
+  incoherente, y con él los `RESUELTO` de lo que quedara dentro.
 - Se escribe sólo cuando entra o sale un aviso del conjunto activo, y en
   `OnDeinit`. Volcar el fichero al refrescar una marca de tiempo lo reescribiría
   en cada ciclo.
@@ -175,3 +284,22 @@ que decidir hasta que abra.
 - La ausencia de permiso de trading no genera un aviso por sí sola: queda en el
   panel. Avisar sin discrepancias convertiría un monitor en modo sólo lectura en
   ruido permanente.
+- **Escala de precios.** `PriceScaleSane` compara el precio que publica el
+  Master con el precio actual del símbolo Slave y bloquea si el desvío pasa de
+  `InpMaxPriceDeviationPercent` (50 % por defecto). No es una guarda de
+  deslizamiento sino de equivalencia equivocada: un mapeo que apunta a otro
+  instrumento produce diferencias de orden de magnitud, y la distancia mínima
+  del bróker no lo detecta porque el valor puede ser perfectamente válido en el
+  símbolo equivocado. Cubre crear, modificar y corregir SL/TP.
+- **Distancia de congelación.** El MT5 no la comprobaba y el port MT4 sí, así
+  que lo que el bróker iba a rechazar de todos modos salía como `CRÍTICO` en
+  cada ventana en lugar de como `BLOQUEADO` con su motivo. `PendingNotFrozen` y
+  `PositionNotFrozen` cierran la asimetría.
+- **Cortacircuitos.** `InpMaxAutoActionsPerHour` acota las acciones automáticas
+  por canal y por hora. Si la copiadora borra lo que el monitor crea, el
+  ping-pong de órdenes se corta con un `BLOQUEADO` que nombra la sospecha. Se
+  cuentan los intentos, no los aciertos: un ping-pong falla tanto como acierta.
+  Un `BLOQUEADO` que no llegó a tocar la cuenta no gasta cupo.
+- **Nivel de margen.** `InpMinMarginLevelPercent` (0 = desactivado) emite
+  `MARGIN` cuando la cuenta Slave baja del umbral. Una copia que no entra por
+  falta de margen se denunciaba como copia faltante sin nombrar la causa real.

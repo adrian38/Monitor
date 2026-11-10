@@ -41,6 +41,15 @@ Los niveles son:
 - `🔴 COPYMONITOR — CRÍTICO`: snapshot no disponible o acción fallida.
 - `🟢 COPYMONITOR — RESUELTO`: el problema avisado ya no existe, lo haya
   corregido CopyMonitor o la propia copiadora.
+- `🔵 COPYMONITOR — VIGILANCIA ACTIVA`: el aviso de arranque y el latido
+  periódico del Slave. No es un problema: existe porque el EA que debería
+  avisar de que ha muerto es precisamente el que ha muerto, así que sin un
+  latido el silencio es ambiguo. Lleva el resumen por canal.
+
+Los avisos que no hablan de un canal concreto —el terminal Slave desconectado,
+el nivel de margen, los avisos perdidos, el latido— usan una cabecera propia
+con `PORTAFOLIO ALIAS`, `ID SLAVE` y `BROKER SLAVE`. No hay cuenta Master que
+identificar y no se inventa ninguna.
 
 El vigilante MT4 (`terminal_watchdog.md`) comparte formato pero no tiene dos
 cuentas que identificar: encabeza con `PORTAFOLIO ALIAS`, un `TERMINAL` opcional
@@ -64,11 +73,21 @@ detalle de las claves está en [alert_lifecycle.md](alert_lifecycle.md).
 
 El envío usa `POST`, así que el texto no depende del límite de longitud de una
 URL. Un aviso de más de 3000 caracteres se trocea por líneas, porque Telegram
-rechaza todo lo que pase de 4096 y el aviso completo se perdería. Lo que no
-logra salir espera en una cola acotada y se reintenta tras la espera que fija el
-backoff, nunca en el ciclo siguiente; el panel muestra cuántos avisos esperan,
-cuántos se descartaron por cola llena, los segundos que faltan para el próximo
-intento y el último error. `InpEnableTelegram` sin token o sin chat ID detiene
+rechaza todo lo que pase de 4096 y el aviso completo se perdería. Todo aviso
+entra en la cola y sale en `TgFlush`: publicar en línea ataba la duración del
+ciclo al tiempo de respuesta de `api.telegram.org`, y con una tormenta de
+avisos el monitor tardaba en detectar justo cuando más rápido había que
+hacerlo. Lo que no logra salir espera en una cola acotada y se reintenta tras
+la espera que fija el backoff, nunca en el ciclo siguiente; el panel muestra
+cuántos avisos esperan, cuántos se descartaron por cola llena, los segundos que
+faltan para el próximo intento y el último error.
+
+Telegram no es el único camino. `InpEnablePushFallback` usa `SendNotification`,
+que no depende de la whitelist de WebRequest, para un `CRÍTICO` que no va a
+salir pronto, para cada descarte por cola llena y para el latido cuando
+Telegram no está configurado. Y lo descartado deja rastro: `TGDROP` cuenta
+cuántos avisos no llegaron, porque `AlertOnce`, `AlertOnChange` y los
+`RESUELTO` se envían una sola vez y un descarte los borraba para siempre. `InpEnableTelegram` sin token o sin chat ID detiene
 el arranque: dejaría al usuario sin ningún aviso y sin saberlo.
 
 El detalle del backoff, del `retry_after` del `429` y de la persistencia del

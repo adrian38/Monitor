@@ -8,13 +8,13 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 ## Componentes
 
-- `CopyMonitor_Master_MT5_v1_14_MULTI.mq5`: publica posiciones abiertas,
+- `CopyMonitor_Master_MT5_v1_15_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_24_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_25_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
-- `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_04_MULTI.mq4`: los mismos dos EAs para MetaTrader
+- `CopyMonitor_Master_MT4_v1_01_MULTI.mq4` y
+  `CopyMonitor_Slave_MT4_v1_05_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -66,13 +66,67 @@ vacío.
 `InpEnableTelegram` exige token y chat ID: activarlo sin credenciales dejaría al
 usuario sin ningún aviso y sin saberlo, así que el EA tampoco arranca.
 
-El snapshot va por el esquema `3`: el `2` añadió el bróker del Master y el `3`
-añade el precio stop-limit de las órdenes pendientes. **Master y Slave se
-despliegan juntos**, porque un Slave anterior rechaza el esquema `3` y
-suspendería la vigilancia. Al revés sí hay compatibilidad: un Master de esquema
-`1` o `2` se sigue leyendo, el aviso muestra `BROKER MASTER: NO DISPONIBLE` y la
-copia de una STOP LIMIT queda bloqueada por falta del precio límite. Un esquema
-que el Slave no entiende se avisa siempre como `CRÍTICO`.
+El snapshot va por el esquema `4`: el `2` añadió el bróker del Master, el `3` el
+precio stop-limit de las órdenes pendientes y el `4` el estado de conexión del
+terminal Master. **Master y Slave se despliegan juntos**, porque un Slave
+anterior rechaza el esquema `4` y suspendería la vigilancia. Al revés sí hay
+compatibilidad: un Master de esquema `1`, `2` o `3` se sigue leyendo, el aviso
+muestra `BROKER MASTER: NO DISPONIBLE`, la copia de una STOP LIMIT queda
+bloqueada por falta del precio límite y el enlace del Master aparece como `NO
+DISPONIBLE` en el panel. Un esquema que el Slave no entiende se avisa siempre
+como `CRÍTICO`.
+
+## Qué se vigila además de las operaciones
+
+Un monitor que calla cuando se rompe no sirve de nada, así que el Slave avisa
+también de lo que le impide vigilar:
+
+- **El Master desconectado de su servidor.** Un terminal sin conexión sigue
+  publicando la última foto conocida, que es fresca y falsa a la vez. Tras
+  `InpMasterOfflineConfirmSeconds` sale un `CRÍTICO` y se suspenden la
+  comparación y las correcciones.
+- **La falta de datos sostenida.** `InpNotifySnapshotProblems` gobierna sólo el
+  corte transitorio; pasados `InpStaleAlertSeconds` el aviso es obligatorio.
+- **El propio terminal Slave desconectado**, tras
+  `InpSlaveOfflineConfirmSeconds`.
+- **Una cuenta Master distinta de la esperada**, si rellenas
+  `InpExpectedMasterAccounts`.
+- **Que el monitor sigue vivo.** `InpSendStartupNotice` confirma al arrancar
+  que Telegram funciona, y `InpHeartbeatHours` repite un resumen cada N horas.
+  Sin latido, no recibir nada significa «todo bien» sólo por costumbre.
+- **Los avisos que no llegaron.** Si la cola se llena y descarta, sale un
+  `CRÍTICO` que lo dice. `InpEnablePushFallback` añade además la notificación
+  push de MetaQuotes, que no depende de la whitelist de WebRequest.
+- **El nivel de margen de la cuenta Slave**, con `InpMinMarginLevelPercent`.
+
+## Una copia con otro volumen no es una copia que falta
+
+Un cierre parcial en el Master, un llenado parcial de la copia o un copiador
+que dimensiona por riesgo dejan una copia viva con otro tamaño. Antes eso se
+denunciaba como copia faltante y, en el caso de las pendientes, la creación
+automática añadía una segunda orden junto a la que ya existía. Ahora se avisa
+como volumen distinto, con los tres números —Master, Slave esperado y Slave
+real— y sin tocar nada: CopyMonitor no cambia el volumen de una operación.
+
+Por el mismo motivo, `InpAlertExtraPositions` está activo por defecto: «el
+Master cerró y la copia sigue abierta» es el caso más caro de todos y ya no
+depende del perfil.
+
+## Límites de la automatización
+
+- El borrado de una pendiente extra exige además que el snapshot del Master
+  lleve `InpEmptyMasterConfirmSeconds` seguidos sin ninguna pendiente. Un
+  Master recién reconfigurado publica el mismo cero que un Master vacío de
+  verdad, y la confirmación anterior de dos segundos no daba tiempo a nadie.
+- `InpMaxAutoActionsPerHour` corta el ping-pong si la copiadora deshace lo que
+  el monitor hace.
+- `InpMaxPriceDeviationPercent` bloquea cuando el precio del Master no encaja
+  con la escala del símbolo Slave: casi siempre es una equivalencia mal puesta.
+- La cuenta Slave debe ser de cobertura. En compensación el emparejamiento una
+  copia por posición no es válido y el EA no arranca salvo que insistas con
+  `InpAllowNettingAccount`.
+- Dos instancias no pueden compartir `InpSlaveID`: se pisarían el fichero de
+  estado de avisos.
 
 El identificador de canal admite de 1 a 32 caracteres de `A-Z a-z 0-9 _ - .`:
 Master y Slave derivan de él el mismo nombre de fichero y un carácter fuera de

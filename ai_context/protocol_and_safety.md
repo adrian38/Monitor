@@ -6,7 +6,7 @@ Ruta lógica: `CopyMonitorMulti\CM_<channel>.txt` dentro de `FILE_COMMON`.
 
 Orden de registros:
 
-1. `META|version|written|channel|nick|account|open_total|pending_total|broker`
+1. `META|version|written|channel|nick|account|open_total|pending_total|broker|connected`
 2. `POS|ticket|symbol|type|volume|open_price|sl|tp`, repetible
 3. `ORD|ticket|symbol|type|volume|open_price|sl|tp|stoplimit`, repetible
 4. `END`
@@ -15,18 +15,30 @@ El separador es `|`, los saltos son CRLF y los valores textuales se sanean
 antes de escribir. Cualquier evolución del esquema debe mantener compatibilidad
 o actualizar Master y Slave conjuntamente.
 
-El esquema vigente es el `3`:
+El esquema vigente es el `4`:
 
 - el `2` añadió al final del `META` el bróker del Master (`ACCOUNT_COMPANY`);
 - el `3` añade al final del registro `ORD` el precio stop-limit de la orden
   (`0` cuando el tipo no lo usa), que hacía falta para comparar y reproducir
-  una copia de tipo STOP LIMIT.
+  una copia de tipo STOP LIMIT;
+- el `4` añade al final del `META` el campo `connected`, que vale `1` cuando el
+  terminal Master mantiene la conexión con su servidor de trading.
 
-El lector acepta `1`, `2` y `3`, un único `META`, un `END` y recuentos
+`connected` existe porque era el único fallo indistinguible del funcionamiento
+normal. Un terminal Master desconectado conserva sus colecciones tal como
+estaban y el EA las sigue publicando cada segundo: el snapshot era fresco, su
+contenido era pasado, y el Slave no tenía forma de separar «todo cuadra» de
+«llevo cuarenta minutos ciego». Lo que el Slave no puede deducir tiene que
+viajar en el propio snapshot. Ver [robustness.md](robustness.md).
+
+El lector acepta `1`, `2`, `3` y `4`, un único `META`, un `END` y recuentos
 declarados que coincidan exactamente con los registros `POS` y `ORD`. Con un
 Master de esquema `1` el bróker llega vacío y se muestra `NO DISPONIBLE`; con
-`1` o `2` el precio stop-limit llega como `0` y no se compara. Cualquier campo
-nuevo se añade al final para no romper al lector antiguo.
+`1` o `2` el precio stop-limit llega como `0` y no se compara; con `1`, `2` o
+`3` el enlace del Master llega como desconocido, el panel lo dice y no se avisa
+de lo que no se sabe. Un `META` que declara esquema `4` sin sus diez campos se
+trata como lectura parcial, no como contrato distinto. Cualquier campo nuevo se
+añade al final para no romper al lector antiguo.
 
 Un snapshot parcial o incoherente queda inválido y suspende las comparaciones y
 el borrado de pendientes; se reintenta la lectura antes de darlo por perdido.
@@ -34,7 +46,17 @@ Un esquema que el Slave no entiende, o un fichero que declara otro canal, no es
 una incidencia transitoria sino el contrato roto: se avisa siempre como
 `CRÍTICO`, con independencia de `InpNotifySnapshotProblems`. Por eso un Master
 más nuevo nunca deja la vigilancia parada en silencio, pero **Master y Slave se
-despliegan juntos**: un Slave anterior rechaza el esquema `3`.
+despliegan juntos**: un Slave anterior rechaza el esquema `4`.
+
+Una ausencia de datos sostenida tampoco es silenciosa desde la v1.25:
+`InpNotifySnapshotProblems` gobierna sólo la falta transitoria, y pasados
+`InpStaleAlertSeconds` el aviso es obligatorio. Un Master muerto, un VPS
+reiniciado o un disco lleno dejaban al Slave suspendiendo todas las
+comparaciones sin decir nada, que es justo lo contrario de lo que debe hacer un
+monitor. Lo mismo vale para el Master desconectado (`MOFF`) y para el propio
+terminal Slave desconectado (`SOFF`): en los tres casos la comparación y las
+correcciones se suspenden, porque actuar sobre datos congelados es peor que no
+actuar, y en los tres casos se avisa.
 
 El identificador de canal admite de 1 a 32 caracteres de `A-Z a-z 0-9 _ - .` en
 ambos EAs, porque los dos derivan el nombre del fichero con la misma regla.
@@ -92,7 +114,17 @@ propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
 - El Slave puede modificar SL/TP de posiciones y crear o modificar pendientes
   sólo después de que la discrepancia persista y se revalide.
 - Una pendiente sólo se borra si pertenece al owner evaluado, sigue siendo
-  extra y permanece así durante el tiempo de confirmación.
+  extra y permanece así durante el tiempo de confirmación, y además el
+  snapshot del Master lleva `InpEmptyMasterConfirmSeconds` seguidos sin
+  ninguna pendiente. Un Master recién reconfigurado publica el mismo cero que
+  un Master que de verdad no tiene nada.
+- Una copia que existe con otro volumen no es una copia faltante: se avisa como
+  `POSVOL` o `PVOL` y **nunca** se responde creando una segunda. El volumen de
+  una posición no se corrige jamás; el de una pendiente tampoco, porque
+  ajustarle el precio afianzaría una copia del tamaño equivocado.
+- Las acciones automáticas están acotadas por canal y por hora
+  (`InpMaxAutoActionsPerHour`): si la copiadora deshace lo que hace el monitor,
+  el ping-pong se corta con un `BLOQUEADO` en lugar de seguir indefinidamente.
 - Ninguna corrección se intenta sin permiso de trading del terminal, del EA y
   de la cuenta, ni con precios o volúmenes que el bróker deba rechazar: esos
   casos se informan como `BLOQUEADO` sin tocar la cuenta.

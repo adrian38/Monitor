@@ -1,7 +1,7 @@
 # Port MT4 de Master y Slave
 
-`CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_04_MULTI.mq4`
-son la traducción a MQL4 del Master MT5 v1.14 y del Slave MT5 v1.24. Conservan
+`CopyMonitor_Master_MT4_v1_01_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_05_MULTI.mq4`
+son la traducción a MQL4 del Master MT5 v1.15 y del Slave MT5 v1.25. Conservan
 el esquema de snapshot, el emparejamiento, los mensajes de Telegram y los
 límites de automatización. Lo que cambia es la API del terminal, no el
 contrato. Las decisiones de protocolo siguen en
@@ -32,7 +32,20 @@ Los tickets del snapshot viajan como `long` en las estructuras del Slave MT4,
 porque un ticket de MT5 no cabe en el `int` de `OrderTicket()`. Se escriben con
 `IntegerToString`, no con `StringFormat("%I64u")`, que MT4 no trata igual.
 
+La pareja MT4 implementa también todo lo que la v1.25 del Slave MT5 añadió:
+esquema 4 con el estado de conexión del Master, aviso obligatorio de la
+ausencia sostenida, vigilancia del propio terminal, cuenta Master esperada,
+avisos de volumen distinto, confirmación del Master vacío antes de borrar,
+cortacircuitos de acciones automáticas, guarda de escala de precios, nivel de
+margen, latido, respaldo push, testigo de instancia y tolerancias por símbolo.
+Lo único que no viaja al port es lo que MQL4 no expone.
+
 ## Lo que MT4 no tiene
+
+- **Modo de margen de la cuenta.** No hay `ACCOUNT_MARGIN_MODE` y no hace
+  falta: las cuentas MT4 son siempre de cobertura, así que la comprobación que
+  el Slave MT5 hace en el arranque con `InpAllowNettingAccount` no tiene
+  equivalente ni sentido aquí.
 
 - **STOP LIMIT.** El Master MT4 publica siempre `0` en el campo stop-limit del
   registro `ORD`, y el Slave MT4 no puede crear una copia de los tipos `6` y
@@ -72,7 +85,8 @@ porque un ticket de MT5 no cabe en el `int` de `OrderTicket()`. Se escriben con
 - **Distancia de congelación.** Dentro de `MODE_FREEZELEVEL` el bróker rechaza
   modificar o borrar una pendiente aunque el precio sea válido. Se comprueba
   antes de enviar y se informa como `BLOQUEADO`, que es la misma regla que ya
-  se aplicaba a la distancia mínima.
+  se aplicaba a la distancia mínima. El Slave MT5 no lo hacía y la v1.25 cierra
+  esa asimetría con `SYMBOL_TRADE_FREEZE_LEVEL`.
 - **Contexto de trading único.** Si otro EA lo tiene ocupado no hay nada que
   avisar: no se envía nada, el candidato sigue vivo y se reintenta en el ciclo
   siguiente. El panel lo muestra como `WAITING`.
@@ -96,7 +110,7 @@ Para compilar, el MetaEditor de MT4 acepta un fuente fuera del directorio de
 datos y no hace falta `/inc` porque ninguno de los dos usa includes:
 
 ```
-metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_04_MULTI.mq4" /log:"<log>"
+metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_05_MULTI.mq4" /log:"<log>"
 ```
 
 El código de salida no distingue el éxito: hay que leer la línea `Result:` del

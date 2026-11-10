@@ -45,6 +45,16 @@ Iguales para posiciones y para pendientes:
 Una sola candidata compatible nunca entra en la fase 1: sin ambigüedad el
 precio ya decide y el desempate no debe alterar ese resultado.
 
+4. **Volumen distinto, en una segunda pasada.** Lo que se quedó sin copia
+   exacta se vuelve a mirar ignorando el volumen. Esta pasada va *después* de
+   que todas las entradas Master hayan tomado la suya, y el motivo es el mismo
+   que gobierna todo lo demás: el recorrido es por ticket, no por prioridad.
+   Si se resolviera dentro del bucle principal, una Master de 0.10 podría
+   reclamar la copia de 0.20 que pertenece a una Master de 0.20 todavía sin
+   evaluar, sólo por tener el ticket más bajo. Aplazarla garantiza que una
+   copia con otro volumen se asigna únicamente cuando ya no la encaja
+   exactamente nadie más. Sigue exigiéndose candidata única.
+
 ## Cuando no hay nada que distinga
 
 Si varias copias empatan en la distancia mínima, no se enlaza ninguna. Se envía

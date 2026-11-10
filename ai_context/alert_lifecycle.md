@@ -38,6 +38,8 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | `POSMISS\|canal\|ticketMaster` | Falta la copia de una posición activa | aparece la copia, o la posición Master deja de existir |
 | `POSAMB\|canal\|ticketMaster` | Enlace ambiguo de una posición | queda una única copia compatible, o la posición Master deja de existir |
 | `POSEXTRA\|canal\|ticketSlave` | Posición activa extra en el Slave | deja de sobrar, o la posición Slave deja de existir |
+| `POSVOL\|canal\|master\|slave` | La copia de una posición existe con otro volumen | los volúmenes vuelven a coincidir, o desaparece cualquiera de los dos lados |
+| `PVOL\|canal\|master\|slave` | La copia de una pendiente existe con otro volumen | igual que `POSVOL` |
 | `ORDMISS\|canal\|ticketMaster` | Falta la copia de una pendiente | aparece la copia, se crea automáticamente, o la pendiente Master deja de existir |
 | `PEARLY\|canal\|ticketMaster` | La copia se activó antes que su Master | deja de haber una posición Slave suelta que encaje, o la pendiente Master deja de existir |
 | `SLTP\|canal\|master\|slave` | SL o TP distintos en una posición | coinciden, o el ticket Slave deja de existir |
@@ -48,6 +50,17 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | `SCHEMA\|canal` | Esquema o canal del snapshot incompatibles | el snapshot vuelve a ser legible |
 | `STALE\|canal` | Snapshot ausente o caducado | vuelven los datos recientes |
 | `COUNT\|canal` | Las cantidades no cuadran por algo sin aviso propio | todo vuelve a explicarse |
+| `MOFF\|canal` | El terminal Master perdió la conexión con su servidor | la recupera |
+| `MACCOUNT\|canal` | El snapshot lo publica otra cuenta Master | vuelve la cuenta esperada |
+| `SOFF\|InpSlaveID` | El terminal Slave perdió la conexión | la recupera |
+| `MARGIN\|InpSlaveID` | Nivel de margen por debajo del mínimo | vuelve a subir |
+| `TGDROP\|InpSlaveID` | La cola de Telegram descartó avisos | la cola vuelve a vaciarse |
+
+Las cuatro últimas no pertenecen a ningún canal: usan `LocalHeader`, que
+encabeza con el alias del portafolio y la cuenta Slave y no inventa una cuenta
+Master que no hay. `MOFF`, `MACCOUNT`, `SOFF` y `STALE` suspenden además la
+comparación y toda corrección automática mientras duran, porque los datos que
+habría que comparar son una foto del pasado.
 
 `FAIL|<clave>` y `PBLOCK|<clave>` acompañan a la clave del problema cuando una
 corrección falla o queda bloqueada, y se cierran con ella.
