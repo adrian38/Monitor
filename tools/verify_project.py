@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_23_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_24_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT4_v1_00_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_03_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_04_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -343,6 +343,10 @@ def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
         "AnyOwnerMatches(",
         "MasterReachable(",
         'ResolveAlert(key,',
+        # The count moves, so the notice has to move with it: one message per
+        # distinct picture, never one per cycle.
+        "void AlertOnChange(",
+        "AlertOnChange(key,signature,",
     ):
         require(counted in slave, f"{name}: count reconciliation missing: {counted}", failures)
 

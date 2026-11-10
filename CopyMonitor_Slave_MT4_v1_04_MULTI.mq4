@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT4_v1_03_MULTI.mq4                            |
+//| CopyMonitor_Slave_MT4_v1_04_MULTI.mq4                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
 //| Pending orders: normally ignored as copy expectations; optional   |
 //| confirmed EXTRA pending in Slave can be deleted.                  |
-//| Port MT4 del Slave MT5 v1.23 MULTI: mismo snapshot, mismas reglas |
+//| Port MT4 del Slave MT5 v1.24 MULTI: mismo snapshot, mismas reglas |
 //| de emparejamiento y los mismos limites de automatizacion.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.03"
-#property description "CopyMonitor Slave MT4 v1.03 MULTI"
+#property version "1.04"
+#property description "CopyMonitor Slave MT4 v1.04 MULTI"
 
 // MT4 no tiene CTrade ni MqlTradeRequest: las correcciones se envian con
 // OrderSend, OrderModify y OrderDelete, y el diagnostico sale de GetLastError.
@@ -163,7 +163,9 @@ struct Owner
 };
 struct SymbolMapRec { string channel,master_symbol,slave_symbol; };
 struct IgnoreRec { string channel; long ticket; bool scoped; };
-struct AlertState { string key; bool active; datetime last; };
+// note guarda la firma del contenido de un aviso que solo se reenvia
+// cuando esa firma cambia. Es estado vivo, no se persiste.
+struct AlertState { string key; bool active; datetime last; string note; };
 struct Candidate { string key; datetime first_seen; datetime last_seen; };
 struct Blocked { string key; datetime last_seen; };
 
@@ -958,7 +960,12 @@ int AlertIndex(const string k)
 void PersistAlert(const string k,const string msg)
 {
    datetime now=TimeLocal(); int i=AlertIndex(k);
-   if(i<0){ i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1); g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0; }
+   if(i<0)
+   {
+      i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1);
+      g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0;
+      g_alerts[i].note="";
+   }
    bool due=!g_alerts[i].active || (now-g_alerts[i].last)>=InpMismatchReminderSeconds;
    if(!g_alerts[i].active) g_alerts_dirty=true;
    g_alerts[i].active=true;
@@ -997,12 +1004,33 @@ void AlertOnce(const string k,const string msg)
    {
       i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1);
       g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0;
+      g_alerts[i].note="";
    }
    bool first=!g_alerts[i].active;
    if(first) g_alerts_dirty=true;
    g_alerts[i].active=true;
    g_alerts[i].last=TimeLocal();
    if(first) Tg(msg);
+}
+// Un aviso que no debe repetirse cada ciclo pero si reflejar un cambio de
+// situacion: se reenvia solo cuando su contenido deja de ser el mismo. La
+// firma no se guarda en disco, asi que tras un reinicio el primer ciclo
+// vuelve a contar el panorama actual, que es lo que el usuario necesita.
+void AlertOnChange(const string k,const string signature,const string msg)
+{
+   int i=AlertIndex(k);
+   if(i<0)
+   {
+      i=ArraySize(g_alerts); ArrayResize(g_alerts,i+1);
+      g_alerts[i].key=k; g_alerts[i].active=false; g_alerts[i].last=0;
+      g_alerts[i].note="";
+   }
+   bool changed=(!g_alerts[i].active || g_alerts[i].note!=signature);
+   if(!g_alerts[i].active) g_alerts_dirty=true;
+   g_alerts[i].active=true;
+   g_alerts[i].last=TimeLocal();
+   g_alerts[i].note=signature;
+   if(changed) Tg(msg);
 }
 // Mantiene vivo un aviso ya emitido sin reenviarlo, para que siga pudiendo
 // resolverse y no caduque mientras el problema continua.
@@ -1109,6 +1137,7 @@ void LoadAlertState()
       g_alerts[n].key=key;
       g_alerts[n].active=true;
       g_alerts[n].last=last;
+      g_alerts[n].note="";
       restored++;
    }
 
@@ -3407,6 +3436,23 @@ void CheckCounts(const Owner &o,const Snap &snap)
                      master_pos_unreachable>0 || master_ord_unreachable>0 ||
                      silent_extra_pos>0);
 
+   // La firma decide si el aviso se reenvia: mientras los numeros no
+   // cambien, el usuario ya sabe lo que hay.
+   string signature=
+      IntegerToString(ArraySize(snap.pos))+"/"+
+      IntegerToString(master_pos_ignored)+"/"+
+      IntegerToString(master_pos_unreachable)+"/"+
+      IntegerToString(ArraySize(sp))+"/"+
+      IntegerToString(filtered_pos)+"/"+
+      IntegerToString(silent_extra_pos)+"/"+
+      IntegerToString(unknown_pos)+"/"+
+      IntegerToString(ArraySize(snap.ord))+"/"+
+      IntegerToString(master_ord_ignored)+"/"+
+      IntegerToString(master_ord_unreachable)+"/"+
+      IntegerToString(ArraySize(so))+"/"+
+      IntegerToString(filtered_ord)+"/"+
+      IntegerToString(unknown_ord);
+
    string key="COUNT|"+o.channel;
 
    if(!unexplained)
@@ -3417,9 +3463,9 @@ void CheckCounts(const Owner &o,const Snap &snap)
       return;
    }
 
-   // Un solo aviso mientras dure: la situacion no cambia por si sola y un
-   // recordatorio cada ciclo seria ruido. El panel lleva los numeros vivos.
-   AlertOnce(key,
+   // Sin recordatorio por ciclo, que seria ruido, pero con reenvio cuando
+   // los numeros cambian: el panorama de un descuadre no es el mismo aviso.
+   AlertOnChange(key,signature,
       AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
       "\n\nPROBLEMA:\nLas cantidades de Master y Slave no cuadran por motivos que no generan aviso propio.\n"+
       CountLine("Posiciones Master",ArraySize(snap.pos))+

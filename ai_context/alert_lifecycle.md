@@ -9,6 +9,10 @@ qué sobrevive a un reinicio. Las funciones son:
 - `KeepAlert(clave)`: mantiene vivo un aviso ya emitido sin reenviarlo.
 - `AlertOnce(clave,msg)`: un único envío mientras el problema dure, para las
   esperas de mercado cerrado.
+- `AlertOnChange(clave,firma,msg)`: como `AlertOnce`, pero reenvía cuando la
+  firma del contenido cambia. Para un aviso que no debe repetirse cada ciclo y
+  cuyo panorama sí puede moverse. La firma vive en memoria, no en disco: tras
+  un reinicio el primer ciclo vuelve a contar la situación actual.
 - `ResolveAlert(clave,msg)`: envía `RESUELTO` **sólo si la clave estaba
   activa** y la apaga. Es la única forma correcta de cerrar un problema que el
   usuario ya conoce.
@@ -48,9 +52,10 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 `FAIL|<clave>` y `PBLOCK|<clave>` acompañan a la clave del problema cuando una
 corrección falla o queda bloqueada, y se cierran con ella.
 
-`COUNT|canal` y los avisos de espera usan `AlertOnce`: un único mensaje
-mientras la situación dure, porque no cambia por sí sola y un recordatorio por
-ciclo sería ruido. Los números vivos están siempre en el panel.
+Los avisos de espera usan `AlertOnce` y `COUNT|canal` usa `AlertOnChange`:
+ninguno repite recordatorio por ciclo, que sería ruido, pero el del descuadre
+se reenvía cuando sus cifras cambian, porque un descuadre distinto no es el
+mismo aviso. Los números vivos están siempre en el panel.
 
 La consecuencia práctica es que un portafolio con varios problemas simultáneos
 recibe varios mensajes en lugar de uno agrupado. Es el mismo comportamiento que

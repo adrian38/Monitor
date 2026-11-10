@@ -77,9 +77,10 @@ eso es lo normal. Cuentan como **inexplicadas**:
 - la posición Slave sin pareja Master en los perfiles que no avisan de
   posiciones extra, es decir todos menos `PORTFOLIO46`.
 
-El aviso es `AlertOnce`: un solo mensaje mientras dure, con el recuento de
-ambos lados y el motivo de cada diferencia, y su `RESUELTO` cuando todo vuelve
-a cuadrar. En perfil `GENERIC` sin comentario propietario el EA no puede
+El aviso es `AlertOnChange`: no repite recordatorio por ciclo, pero se reenvía
+cada vez que alguna de las cifras cambia, con el recuento de ambos lados y el
+motivo de cada diferencia, y cierra con `RESUELTO` cuando todo vuelve a
+cuadrar. En perfil `GENERIC` sin comentario propietario el EA no puede
 distinguir sus copias de una operación manual, así que una operación abierta a
 mano en el Slave entra como inexplicada: la palanca es el comentario de
 propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
