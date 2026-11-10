@@ -5,7 +5,8 @@ El Slave sólo puede corregir automáticamente cuatro clases de problema:
 1. SL o TP distintos en una posición activa: modifica exclusivamente SL/TP;
    nunca abre, cierra ni cambia volumen de posiciones.
 2. Pendiente faltante: crea la copia con símbolo mapeado, volumen Slave
-   normalizado, entrada, SL y TP. Desde el esquema 3 el snapshot transporta el
+   normalizado, entrada, SL y TP. Nunca cuando la copia parece haberse activado
+   antes que el Master: ver [pending_matching.md](pending_matching.md). Desde el esquema 3 el snapshot transporta el
    precio stop-limit, así que también se pueden crear BUY/SELL STOP LIMIT; con
    un Master de esquema 1 o 2 ese precio no llega y la creación queda
    `BLOQUEADO`.
@@ -14,9 +15,12 @@ El Slave sólo puede corregir automáticamente cuatro clases de problema:
 4. Precio, precio límite, SL o TP distintos en una pendiente emparejada:
    modifica esos valores conservando tipo de tiempo y expiración de la copia.
 
-Toda detección envía primero `ALERTA`. La acción se retrasa
-`InpAutoFixPersistSeconds` —o `InpExtraPendingConfirmSeconds` para borrado— para
-dar tiempo a Copyix a corregir. Al cumplirse el plazo se releen las colecciones,
+Toda detección envía primero `ALERTA`. La acción se retrasa para dar tiempo a
+Copyix a corregir: `InpMissingPendingConfirmSeconds` para crear una pendiente
+que falta, `InpExtraPendingConfirmSeconds` para borrar una extra y
+`InpAutoFixPersistSeconds` para las correcciones de valores. Crear una orden
+nueva no es lo mismo que ajustar lo que ya existe, así que la creación tiene su
+propio retardo desde la v1.22. Al cumplirse el plazo se releen las colecciones,
 se revalida ownership y se actúa sólo si el problema continúa.
 
 Si Copyix resuelve durante la espera, se cancela el candidato y se envía
@@ -61,7 +65,8 @@ creación— caduca tras una hora sin usarse, para que una sesión larga no acum
 claves de tickets antiguos. Un aviso cuyo ticket ya no existe se cierra con
 `RESUELTO` en lugar de quedarse activo para siempre.
 
-Los controles son `InpAutoFixPositionSLTP` para SL/TP de posiciones activas,
+Los controles son `InpMissingPendingConfirmSeconds` para el retardo de creación,
+`InpAutoFixPositionSLTP` para SL/TP de posiciones activas,
 `InpAutoFixPendingSLTP` para SL/TP de pendientes, `InpAutoModifyPending` para
 precio de entrada y precio límite de pendientes, `InpAutoCreateMissingPending`,
 `InpAutoDeleteExtraPending` e `InpAutoFixPersistSeconds`. Al modificar una

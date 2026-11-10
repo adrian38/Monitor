@@ -35,6 +35,7 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | `POSAMB\|canal\|ticketMaster` | Enlace ambiguo de una posición | queda una única copia compatible, o la posición Master deja de existir |
 | `POSEXTRA\|canal\|ticketSlave` | Posición activa extra en el Slave | deja de sobrar, o la posición Slave deja de existir |
 | `ORDMISS\|canal\|ticketMaster` | Falta la copia de una pendiente | aparece la copia, se crea automáticamente, o la pendiente Master deja de existir |
+| `PEARLY\|canal\|ticketMaster` | La copia se activó antes que su Master | deja de haber una posición Slave suelta que encaje, o la pendiente Master deja de existir |
 | `SLTP\|canal\|master\|slave` | SL o TP distintos en una posición | coinciden, o el ticket Slave deja de existir |
 | `PVALUES\|canal\|master\|slave` | Valores distintos en una pendiente | coinciden, o el ticket Slave deja de existir |
 | `PEXTRA\|canal\|ticketSlave` | Pendiente extra en el Slave | se empareja o deja de existir |
@@ -42,9 +43,14 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | `PAMBMASTER\|canal\|ticketMaster` | Enlace ambiguo de una pendiente | queda una única copia compatible |
 | `SCHEMA\|canal` | Esquema o canal del snapshot incompatibles | el snapshot vuelve a ser legible |
 | `STALE\|canal` | Snapshot ausente o caducado | vuelven los datos recientes |
+| `COUNT\|canal` | Las cantidades no cuadran por algo sin aviso propio | todo vuelve a explicarse |
 
 `FAIL|<clave>` y `PBLOCK|<clave>` acompañan a la clave del problema cuando una
 corrección falla o queda bloqueada, y se cierran con ella.
+
+`COUNT|canal` y los avisos de espera usan `AlertOnce`: un único mensaje
+mientras la situación dure, porque no cambia por sí sola y un recordatorio por
+ciclo sería ruido. Los números vivos están siempre en el panel.
 
 La consecuencia práctica es que un portafolio con varios problemas simultáneos
 recibe varios mensajes en lugar de uno agrupado. Es el mismo comportamiento que

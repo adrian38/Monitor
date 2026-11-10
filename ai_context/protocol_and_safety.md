@@ -57,6 +57,33 @@ Ver [robustness.md](robustness.md).
   El precio stop-limit se compara cuando el Master lo publica.
 - Los tickets Master configurados para ignorar no generan incidencias.
 
+### Lo que el canal no ve
+
+Al construir sus listas el Slave descarta en silencio toda operación cuyo
+símbolo quede fuera del filtro o cuyo comentario no sea el del canal. Es
+deliberado, pero dejaba un descuadre sin explicación: el usuario contaba cinco
+operaciones en el Master y cuatro en el Slave y ningún aviso decía por qué.
+
+`CheckCounts` cierra ese hueco. Recorre el terminal entero una vez por ciclo y
+por canal, y emite `COUNT|<canal>` cuando la diferencia de cantidades no está
+ya cubierta por un aviso por operación. Cuenta como **explicada** la operación
+que pertenece a otro canal configurado en el mismo EA, porque en multi-master
+eso es lo normal. Cuentan como **inexplicadas**:
+
+- la operación de este canal oculta por el filtro de símbolos;
+- la operación que no pertenece a ningún canal configurado;
+- la posición Master cuyo símbolo Slave está filtrado, que nunca podrá tener
+  copia visible y genera un aviso de copia faltante incomprensible;
+- la posición Slave sin pareja Master en los perfiles que no avisan de
+  posiciones extra, es decir todos menos `PORTFOLIO46`.
+
+El aviso es `AlertOnce`: un solo mensaje mientras dure, con el recuento de
+ambos lados y el motivo de cada diferencia, y su `RESUELTO` cuando todo vuelve
+a cuadrar. En perfil `GENERIC` sin comentario propietario el EA no puede
+distinguir sus copias de una operación manual, así que una operación abierta a
+mano en el Slave entra como inexplicada: la palanca es el comentario de
+propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
+
 ## Límites de automatización
 
 - El Master nunca abre, modifica ni cierra operaciones.

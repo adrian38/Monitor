@@ -28,6 +28,34 @@ de símbolo o configuración podría impedir el matching correcto. Cuando esa mi
 pendiente pasa a estar emparejada, o el Master se queda sin pendientes, el
 `PAMB` se cierra con `RESUELTO`.
 
+## Activación temprana de la copia
+
+Una copia que se ejecuta antes que su Master deja de ser pendiente en el Slave y
+pasa a ser posición. El Master sigue publicando la pendiente, así que el Slave
+la da por faltante. Sin más comprobación, `InpAutoCreateMissingPending` crearía
+otra copia, esa copia podría volver a activarse antes, y la operación se
+duplicaría sin fin.
+
+Por eso, antes de crear, se mira si alguna posición activa del Slave que no
+corresponde a ninguna posición Master podría ser esa pendiente ya ejecutada:
+mismo símbolo equivalente, sentido compatible con el tipo de la pendiente y
+volumen Slave esperado. El precio no entra en la comparación a propósito, porque
+una activación llena a precio de mercado y exigir el precio de la pendiente
+dejaría pasar justo el caso que hay que frenar. Si hay candidata se emite un
+único `PEARLY` `BLOQUEADO`, no se crea nada, y el aviso de copia faltante se
+mantiene vivo sin repetirse.
+
+La regla es deliberadamente conservadora: si varias pendientes Master encajan
+con la misma posición suelta, todas quedan bloqueadas. El coste de bloquear de
+más es un aviso y una creación manual; el de bloquear de menos es duplicar la
+operación. `CheckOpen` deja las posiciones no emparejadas en `g_unpaired_pos`
+para que `CheckPending` las consulte; por eso el orden de las dos llamadas en
+`ProcessOwner` importa. Ver [alert_lifecycle.md](alert_lifecycle.md).
+
+## Borrado de una pendiente extra
+
 Antes del borrado se espera `InpExtraPendingConfirmSeconds`, se vuelve a
 seleccionar el ticket y se comprueban de nuevo tipo pendiente, filtro de símbolo
-y ownership por comentario. Las posiciones abiertas nunca entran en este flujo.
+y ownership por comentario. Las posiciones abiertas nunca se cierran ni se
+modifican desde este flujo: sólo se leen para reconocer una activación
+temprana.

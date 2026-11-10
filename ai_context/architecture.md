@@ -4,11 +4,11 @@
 
 - `CopyMonitor_Master_MT5_v1_14_MULTI.mq5`: EA de sólo lectura operativa.
   Filtra posiciones y pendientes de la cuenta Master y publica un snapshot.
-- `CopyMonitor_Slave_MT5_v1_21_MULTI.mq5`: EA de monitorización. Lee uno o
+- `CopyMonitor_Slave_MT5_v1_23_MULTI.mq5`: EA de monitorización. Lee uno o
   varios snapshots, asigna operaciones por propietario, compara estado y emite
   diagnósticos o avisos. Puede borrar únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_01_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  `CopyMonitor_Slave_MT4_v1_03_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4. Publican y leen el mismo snapshot, así que un Master de una plataforma
   puede alimentar a un Slave de la otra. Ver [mt4_port.md](mt4_port.md).
 

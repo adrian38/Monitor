@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_21_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_23_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT4_v1_00_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_01_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_03_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -254,6 +254,15 @@ SHARED_CORRECTION_TOKENS = (
     "MasterPositionPresent(",
     # Retiring a whole key family is only for a watch the user switched off.
     "ClearAlertsWithPrefix(",
+    # A copy that filled before its Master is a position, not a missing
+    # pending: recreating it would duplicate the trade on every early fill.
+    "PendingCouldBePosition(",
+    "EarlyActivatedCopy(",
+    "g_unpaired_pos",
+    "early_blocked[m]",
+    # Creating an order is not the same as adjusting one that already exists,
+    # so it waits on its own delay.
+    "ConfirmProblem(create_key,InpMissingPendingConfirmSeconds)",
     # A closed market is a wait, not a failure: one notice, spaced retries
     # and the correction as soon as the session opens.
     "SymbolSessionOpen(",
@@ -292,6 +301,7 @@ ALERT_KEY_FAMILIES = (
     '"POSAMB|"',
     '"POSEXTRA|"',
     '"ORDMISS|"',
+    '"PEARLY|"',
 )
 
 
@@ -323,6 +333,19 @@ def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
     for recovered in ('ResolveAlert("SCHEMA|"+o.channel', 'ResolveAlert("STALE|"+o.channel'):
         require(recovered in slave, f"{name}: recovery is silent: {recovered}", failures)
 
+    # A count that does not add up has no per-operation alert behind it, so it
+    # needs one of its own: the EA drops filtered and foreign operations in
+    # silence while building its lists.
+    for counted in (
+        "void CheckCounts(",
+        "CheckCounts(o,s);",
+        "ClassifyHidden(",
+        "AnyOwnerMatches(",
+        "MasterReachable(",
+        'ResolveAlert(key,',
+    ):
+        require(counted in slave, f"{name}: count reconciliation missing: {counted}", failures)
+
 
 def check_tunables(source: dict[str, str], failures: list[str]) -> None:
     """Every timer is an input carrying the value the EA used when it was fixed."""
@@ -332,6 +355,7 @@ def check_tunables(source: dict[str, str], failures: list[str]) -> None:
             "InpSnapshotReadAttempts": "3",
             "InpSnapshotReadRetryMs": "15",
             "InpMarketClosedRetrySeconds": "60",
+            "InpMissingPendingConfirmSeconds": "5",
             "InpTelegramChunkChars": "3000",
             "InpTelegramQueueMax": "40",
             "InpTelegramSendsPerCycle": "2",
