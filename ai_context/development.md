@@ -30,9 +30,9 @@ versión. No cambiar una versión sólo por documentación externa al EA.
   El código de salida de MetaEditor no distingue el éxito: hay que leer la
   línea `Result:` del log, que está en UTF-16.
 - La compilación no autoriza a adjuntar EAs, lanzar terminales ni tocar cuentas.
-- Tras una compilación de entrega, copiar sólo los binarios de la versión
-  vigente a `compiled/MT5` y `compiled/MT4`. Los ejecutables generados junto a
-  las fuentes no se versionan.
+- Tras una compilación de entrega, mover la versión anterior a `compiled/MT5`
+  o `compiled/MT4` y dejar junto a las fuentes únicamente los cuatro binarios
+  vigentes. Las demás versiones históricas permanecen en esas carpetas.
 - Para cambios de snapshot, verificar escritor y lector sobre el mismo esquema.
 - Informar compilaciones o pruebas omitidas y por qué.
 

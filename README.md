@@ -186,7 +186,8 @@ Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y los
 tres `.mq4` con el MetaEditor de MT4. Consulta `ai_context/main.md` para el
 contrato técnico completo.
 
-Los binarios versionados de la pareja actual se entregan separados por
-plataforma en `compiled/MT5` (`.ex5`) y `compiled/MT4` (`.ex4`). Los artefactos
-que MetaEditor deje junto a las fuentes siguen siendo locales e ignorados.
+Las compilaciones históricas se conservan separadas por plataforma en
+`compiled/MT5` (`.ex5`) y `compiled/MT4` (`.ex4`). Junto a las fuentes quedan
+únicamente los cuatro binarios de la versión vigente: Master y Slave de MT4 y
+MT5.
 
