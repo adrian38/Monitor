@@ -18,6 +18,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   validación de configuración, cola de avisos y guardas previas a corregir.
 - [terminal_watchdog.md](terminal_watchdog.md): vigilancia de conexión del
   terminal MT4, confirmación de la caída, recordatorios y límite del vigilante.
+- [mt4_port.md](mt4_port.md): port MT4 de Master y Slave, equivalencia de
+  códigos de tipo, interoperabilidad entre plataformas y lo propio de MQL4.
 
 El código es la autoridad sobre los detalles que no estén documentados aquí.
 Toda decisión duradera nueva debe añadirse a una nota temática y a este índice.

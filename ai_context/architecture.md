@@ -7,6 +7,10 @@
 - `CopyMonitor_Slave_MT5_v1_19_MULTI.mq5`: EA de monitorización. Lee uno o
   varios snapshots, asigna operaciones por propietario, compara estado y emite
   diagnósticos o avisos. Puede borrar únicamente pendientes extra confirmadas.
+- `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y
+  `CopyMonitor_Slave_MT4_v1_00_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  4. Publican y leen el mismo snapshot, así que un Master de una plataforma
+  puede alimentar a un Slave de la otra. Ver [mt4_port.md](mt4_port.md).
 
 ## Flujo
 
@@ -18,6 +22,7 @@
 5. El panel, el log y Telegram muestran incidencias persistentes según la
    configuración de la instancia.
 
-El fichero común permite que terminales MT5 diferentes de la misma máquina se
-comuniquen sin red ni proceso intermedio.
+El fichero común permite que terminales diferentes de la misma máquina se
+comuniquen sin red ni proceso intermedio. MetaTrader 4 y MetaTrader 5 comparten
+ese directorio, así que la pareja no tiene por qué ser de la misma plataforma.
 

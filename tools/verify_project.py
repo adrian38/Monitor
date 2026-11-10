@@ -12,7 +12,13 @@ SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
     "slave": ROOT / "CopyMonitor_Slave_MT5_v1_19_MULTI.mq5",
 }
-# Standalone MT4 connection watchdog. It shares no snapshot with the MQL5 pair.
+# MT4 port of the same pair. It writes and reads the very same snapshot, so a
+# Master of one platform can feed a Slave of the other.
+MT4_SOURCES = {
+    "master": ROOT / "CopyMonitor_Master_MT4_v1_00_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_00_MULTI.mq4",
+}
+# Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
 
 
@@ -125,20 +131,30 @@ def check_protocol(master: str, slave: str, failures: list[str]) -> None:
     require("PositionClose" not in slave, "slave: automatic position close detected", failures)
 
 
-def check_shared_contract(master: str, slave: str, failures: list[str]) -> None:
-    """Whatever the Slave relies on must be written the same way in the Master."""
-    master_rule = function_body(master, "bool ChannelIdValid(")
-    slave_rule = function_body(slave, "bool ChannelIdValid(")
+def check_shared_contract(sources: dict[str, str], failures: list[str]) -> None:
+    """Every EA that touches the snapshot must derive its name the same way.
 
-    require(master_rule is not None, "master: ChannelIdValid missing", failures)
-    require(slave_rule is not None, "slave: ChannelIdValid missing", failures)
-    require(
-        master_rule is not None and master_rule == slave_rule,
-        "channel id rule differs between Master and Slave",
-        failures,
-    )
+    The rule is compared across platforms, not only inside each pair: an MT4
+    Master may feed an MT5 Slave, so a divergent rule would leave one of them
+    reading a file nobody writes.
+    """
+    reference_name, reference_rule = None, None
 
-    for name, source in (("master", master), ("slave", slave)):
+    for name, source in sources.items():
+        rule = function_body(source, "bool ChannelIdValid(")
+        require(rule is not None, f"{name}: ChannelIdValid missing", failures)
+        if rule is None:
+            continue
+        if reference_rule is None:
+            reference_name, reference_rule = name, rule
+            continue
+        require(
+            rule == reference_rule,
+            f"channel id rule differs between {reference_name} and {name}",
+            failures,
+        )
+
+    for name, source in sources.items():
         require(
             "#define CM_CHANNEL_MAX_LEN   32" in source
             or "#define CM_CHANNEL_MAX_LEN     32" in source,
@@ -207,55 +223,62 @@ def check_telegram_contract(slave: str, failures: list[str]) -> None:
     )
 
 
-def check_automatic_corrections(slave: str, failures: list[str]) -> None:
-    required = (
-        "InpAutoFixPositionSLTP",
-        "InpAutoCreateMissingPending",
-        "InpAutoModifyPending",
-        "InpAutoFixPersistSeconds",
-        "ConfirmProblem(",
-        "FixPositionStops(",
-        "CreatePendingCopy(",
-        "ModifyPendingCopy(",
-        "ResolveAlert(",
-        "g_trade.OrderDelete(",
-        # A created copy must be verified as owned AND matchable, or blocked, so
-        # the same missing pending is never created twice.
-        "StillOwnedPending(o,created_ticket,live)",
-        "OrdCompatible(o,master,live)",
-        "IsCreateBlocked(",
-        "BlockCreate(",
-        "PruneState(",
-        # Corrections are never attempted when the terminal forbids trading, and
-        # never with prices the broker must reject: both report BLOQUEADO.
-        "TradingPermitted(",
-        "PendingPriceAcceptable(",
-        "PositionStopsAcceptable(",
-        "SymbolAcceptsNewOrders(",
-        # Alerts about tickets that no longer exist must be closed.
-        "ResolveVanishedAlerts(",
-        # A closed market is a wait, not a failure: one notice, spaced retries
-        # and the correction as soon as the session opens.
-        "SymbolSessionOpen(",
-        "TradeRetcodeIsMarketClosed(",
-        "TRADE_RETCODE_MARKET_CLOSED",
-        "MarketClosedNotice(",
-        "MarketWaitDue(",
-        "ClearMarketWait(",
-        "AlertOnce(",
-    )
-    for token in required:
-        require(token in slave, f"slave: automatic correction missing: {token}", failures)
+# The scope of the automatic corrections is the same on both platforms; only
+# the trade API underneath differs.
+SHARED_CORRECTION_TOKENS = (
+    "InpAutoFixPositionSLTP",
+    "InpAutoCreateMissingPending",
+    "InpAutoModifyPending",
+    "InpAutoFixPersistSeconds",
+    "ConfirmProblem(",
+    "FixPositionStops(",
+    "CreatePendingCopy(",
+    "ModifyPendingCopy(",
+    "ResolveAlert(",
+    # A created copy must be verified as owned AND matchable, or blocked, so
+    # the same missing pending is never created twice.
+    "StillOwnedPending(o,created_ticket,live)",
+    "OrdCompatible(o,master,live)",
+    "IsCreateBlocked(",
+    "BlockCreate(",
+    "PruneState(",
+    # Corrections are never attempted when the terminal forbids trading, and
+    # never with prices the broker must reject: both report BLOQUEADO.
+    "TradingPermitted(",
+    "PendingPriceAcceptable(",
+    "PositionStopsAcceptable(",
+    "SymbolAcceptsNewOrders(",
+    # Alerts about tickets that no longer exist must be closed.
+    "ResolveVanishedAlerts(",
+    # A closed market is a wait, not a failure: one notice, spaced retries
+    # and the correction as soon as the session opens.
+    "SymbolSessionOpen(",
+    "MarketClosedNotice(",
+    "MarketWaitDue(",
+    "ClearMarketWait(",
+    "AlertOnce(",
+)
 
-    for forbidden in ("g_trade.PositionOpen(", "g_trade.PositionClose("):
-        require(forbidden not in slave, f"slave: forbidden position action: {forbidden}", failures)
+
+def check_automatic_corrections(
+    name: str,
+    slave: str,
+    platform_tokens: tuple[str, ...],
+    forbidden_actions: tuple[str, ...],
+    failures: list[str],
+) -> None:
+    for token in SHARED_CORRECTION_TOKENS + platform_tokens:
+        require(token in slave, f"{name}: automatic correction missing: {token}", failures)
+
+    for forbidden in forbidden_actions:
+        require(forbidden not in slave, f"{name}: forbidden position action: {forbidden}", failures)
 
     # Correction notices are mandatory; the old opt-out switches are gone.
     for dead in ("InpNotifyDeleteSuccess", "InpNotifyDeleteFailure"):
-        require(dead not in slave, f"slave: removed input still referenced: {dead}", failures)
+        require(dead not in slave, f"{name}: removed input still referenced: {dead}", failures)
 
 
-def check_tunables(master: str, slave: str, failures: list[str]) -> None:
+def check_tunables(source: dict[str, str], failures: list[str]) -> None:
     """Every timer is an input carrying the value the EA used when it was fixed."""
     expected = {
         "slave": {
@@ -269,7 +292,6 @@ def check_tunables(master: str, slave: str, failures: list[str]) -> None:
         },
         "master": {"InpPublishFailLogSeconds": "10"},
     }
-    source = {"master": master, "slave": slave}
 
     for name, inputs in expected.items():
         for input_name, default in inputs.items():
@@ -305,12 +327,128 @@ def check_tunables(master: str, slave: str, failures: list[str]) -> None:
         "CM_TG_QUEUE_MAX",
         "CM_TG_FLUSH_PER_CYCLE",
     ):
-        require(dead not in slave, f"slave: hardcoded timer still present: {dead}", failures)
+        require(
+            dead not in source["slave"],
+            f"slave: hardcoded timer still present: {dead}",
+            failures,
+        )
 
     # The channel length is part of the shared contract, not a tunable.
     require(
-        "#define CM_CHANNEL_MAX_LEN" in master and "#define CM_CHANNEL_MAX_LEN" in slave,
+        all("#define CM_CHANNEL_MAX_LEN" in text for text in source.values()),
         "channel length must stay a shared constant",
+        failures,
+    )
+
+
+def check_mt4_protocol(master: str, slave: str, failures: list[str]) -> None:
+    """The MT4 pair writes and reads the very same snapshot as the MQL5 pair."""
+    for token in ('"META|"', '"POS|"', '"ORD|"', '"END\\r\\n"'):
+        require(token in master, f"master mt4: protocol token missing: {token}", failures)
+
+    require(
+        "#define CM_SNAPSHOT_SCHEMA   3" in master,
+        "master mt4: published schema must be 3",
+        failures,
+    )
+    require(
+        '"META|"+IntegerToString(CM_SNAPSHOT_SCHEMA)' in master,
+        "master mt4: META must declare the schema constant",
+        failures,
+    )
+    require(
+        "ACCOUNT_COMPANY" in master,
+        "master mt4: schema 2 must publish the Master broker",
+        failures,
+    )
+    # MT4 has no stop-limit order, but the ORD record keeps a fixed field count
+    # so an MQL5 reader still parses it.
+    require(
+        'DoubleToString(0.0,10)+"\\r\\n"' in master,
+        "master mt4: the schema 3 stop-limit field must still be published as zero",
+        failures,
+    )
+
+    for token in ('p[0]=="META"', 'p[0]=="POS"', 'p[0]=="ORD"', 'p[0]=="END"'):
+        require(token in slave, f"slave mt4: protocol reader missing: {token}", failures)
+
+    for token in ('if(token=="1") return 1;', 'if(token=="2") return 2;', 'if(token=="3") return 3;'):
+        require(token in slave, f"slave mt4: schema reader missing: {token}", failures)
+    require(
+        "SnapshotSchema(p[1])" in slave,
+        "slave mt4: the META schema field must be validated",
+        failures,
+    )
+    require(
+        "x.stoplimit=(n>=9)?StringToDouble(p[8]):0.0;" in slave,
+        "slave mt4: schema 3 stop-limit price is not read back",
+        failures,
+    )
+    require(
+        "CM_SNAP_SCHEMA" in slave and 'PersistAlert("SCHEMA|"' in slave,
+        "slave mt4: an unreadable schema must raise a non-optional alert",
+        failures,
+    )
+    require(
+        "s.open_total!=ArraySize(s.pos)" in slave
+        and "s.pending_total!=ArraySize(s.ord)" in slave,
+        "slave mt4: snapshot count integrity check missing",
+        failures,
+    )
+
+    # The Master only publishes and the Slave never closes a position.
+    for forbidden in ("OrderSend(", "OrderModify(", "OrderDelete(", "OrderClose("):
+        require(
+            forbidden not in master,
+            f"master mt4: trading action detected: {forbidden}",
+            failures,
+        )
+    require("OrderClose(" not in slave, "slave mt4: automatic position close detected", failures)
+
+
+def check_mt4_specifics(master: str, slave: str, failures: list[str]) -> None:
+    """What MQL4 forces the port to do differently must stay in place."""
+    # OrderSelect by ticket also finds closed trades: without OrderCloseTime an
+    # alert about a deleted pending would never be resolved.
+    require(
+        "bool SelectLiveOrder(" in slave and "OrderCloseTime()==0" in slave,
+        "slave mt4: a history order must not count as a live one",
+        failures,
+    )
+    for token in (
+        # Trade retcodes become MT4 error codes.
+        "CM_ERR_TRADE_DISABLED",
+        "CM_ERR_OFF_QUOTES",
+        # An OrderModify that changes nothing is a success, not a failure.
+        "CM_ERR_NO_RESULT",
+        # MT4 refuses to touch a pending inside the freeze distance.
+        "PendingNotFrozen(",
+        "MODE_FREEZELEVEL",
+        # One trade context per terminal: busy is a wait, not an alert.
+        "IsTradeContextBusy(",
+        # A comment longer than MT4 allows could never match a real order.
+        "CM_MT4_COMMENT_MAX_LEN",
+    ):
+        require(token in slave, f"slave mt4: missing contract: {token}", failures)
+
+    # MT4 has no OnTradeTransaction: OnTick carries the immediate reaction.
+    require(
+        "void OnTick()" in master and "Cycle(false)" in master,
+        "master mt4: OnTick must replace OnTradeTransaction",
+        failures,
+    )
+    require(
+        "void OnTick()" in slave and "SlaveStateSignature(" in slave,
+        "slave mt4: OnTick must replace OnTradeTransaction",
+        failures,
+    )
+
+    # MT4 cannot place a stop-limit order, so it must never try.
+    creatable = function_body(slave, "bool CreatablePendingType(")
+    require(creatable is not None, "slave mt4: CreatablePendingType missing", failures)
+    require(
+        creatable is not None and "STOP_LIMIT" not in creatable,
+        "slave mt4: a stop-limit copy must stay blocked, not attempted",
         failures,
     )
 
@@ -418,6 +556,7 @@ def check_context(failures: list[str]) -> None:
         "automatic_corrections.md",
         "robustness.md",
         "terminal_watchdog.md",
+        "mt4_port.md",
     ):
         require(note in index, f"ai_context index missing {note}", failures)
         require((ROOT / "ai_context" / note).is_file(), f"missing ai_context/{note}", failures)
@@ -426,6 +565,7 @@ def check_context(failures: list[str]) -> None:
 def check_documentation(failures: list[str]) -> None:
     """Docs must name the sources that actually exist."""
     expected = {path.name for path in SOURCES.values()}
+    expected |= {path.name for path in MT4_SOURCES.values()}
     for relative in ("README.md", "ai_context/architecture.md"):
         text = (ROOT / relative).read_text(encoding="utf-8")
         for name in expected:
@@ -442,12 +582,48 @@ def check_documentation(failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     source = {name: check_source(name, path, failures) for name, path in SOURCES.items()}
+    mt4 = {
+        name: check_source(f"{name} mt4", path, failures)
+        for name, path in MT4_SOURCES.items()
+    }
+
     check_protocol(source["master"], source["slave"], failures)
-    check_shared_contract(source["master"], source["slave"], failures)
     check_publication(source["master"], failures)
     check_telegram_contract(source["slave"], failures)
-    check_automatic_corrections(source["slave"], failures)
-    check_tunables(source["master"], source["slave"], failures)
+    check_automatic_corrections(
+        "slave",
+        source["slave"],
+        ("g_trade.OrderDelete(", "TradeRetcodeIsMarketClosed(", "TRADE_RETCODE_MARKET_CLOSED"),
+        ("g_trade.PositionOpen(", "g_trade.PositionClose("),
+        failures,
+    )
+    check_tunables(source, failures)
+
+    check_mt4_protocol(mt4["master"], mt4["slave"], failures)
+    check_mt4_specifics(mt4["master"], mt4["slave"], failures)
+    check_publication(mt4["master"], failures)
+    check_telegram_contract(mt4["slave"], failures)
+    check_automatic_corrections(
+        "slave mt4",
+        mt4["slave"],
+        ("OrderDelete((int)", "TradeErrorIsMarketClosed(", "CM_ERR_MARKET_CLOSED"),
+        ("OrderClose(",),
+        failures,
+    )
+    check_tunables(mt4, failures)
+
+    # The channel rule is shared by every EA that names the snapshot file,
+    # whatever platform it runs on.
+    check_shared_contract(
+        {
+            "master": source["master"],
+            "slave": source["slave"],
+            "master mt4": mt4["master"],
+            "slave mt4": mt4["slave"],
+        },
+        failures,
+    )
+
     check_watchdog(failures)
     check_context(failures)
     check_documentation(failures)
@@ -458,7 +634,8 @@ def main() -> int:
         return 1
 
     print(
-        f"OK: {len(SOURCES)} MQL5 sources, shared protocol and the MT4 watchdog verified"
+        f"OK: {len(SOURCES)} MQL5 sources, {len(MT4_SOURCES)} MQL4 sources, "
+        "shared protocol and the MT4 watchdog verified"
     )
     return 0
 

@@ -1,10 +1,10 @@
-# CopyMonitor MT5
+# CopyMonitor
 
 Monitor de consistencia entre una cuenta Master y una cuenta Slave de
-MetaTrader 5. El proyecto no copia operaciones: publica el estado del Master,
-compara las copias existentes en el Slave y avisa de diferencias. Incluye
-además un vigilante independiente de MetaTrader 4 que avisa cuando un terminal
-pierde la conexión.
+MetaTrader. El proyecto no copia operaciones: publica el estado del Master,
+compara las copias existentes en el Slave y avisa de diferencias. Hay una
+pareja Master/Slave para MetaTrader 5 y otra para MetaTrader 4, y un vigilante
+independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 ## Componentes
 
@@ -13,13 +13,36 @@ pierde la conexión.
 - `CopyMonitor_Slave_MT5_v1_19_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
+- `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y
+  `CopyMonitor_Slave_MT4_v1_00_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
   repite el aviso hasta que se recupera. No participa en el snapshot.
 
 Los terminales se comunican mediante
 `FILE_COMMON/CopyMonitorMulti/CM_<channel>.txt`. No requieren sockets ni un
-servicio intermedio.
+servicio intermedio. MetaTrader 4 y MetaTrader 5 comparten ese directorio y
+publican los mismos códigos de tipo, así que las cuatro combinaciones
+funcionan: Master MT4 con Slave MT5, Master MT5 con Slave MT4 y los dos pares
+homogéneos.
+
+## MetaTrader 4
+
+La pareja MT4 conserva el contrato de la MT5. Las diferencias que se notan al
+usarla, con el detalle en [`ai_context/mt4_port.md`](ai_context/mt4_port.md):
+
+- MT4 no tiene órdenes STOP LIMIT. Un Master MT4 nunca las publica y un Slave
+  MT4 no puede crear la copia de una: queda `BLOQUEADO` con el motivo.
+- El comentario propietario no puede pasar de 31 caracteres, que es el límite
+  de MT4. Uno más largo detiene el arranque en lugar de dejar la vigilancia
+  vacía en silencio.
+- Hay un solo contexto de trading por terminal. Si otro EA lo tiene ocupado, la
+  corrección espera al ciclo siguiente sin avisar; el panel lo muestra.
+- Además de la distancia mínima, se respeta la distancia de congelación del
+  bróker antes de modificar o borrar una pendiente.
+- Los errores de trading son los de MT4 (132 mercado cerrado, 133 trading
+  deshabilitado, 136 sin cotizaciones), y el aviso los muestra con su texto.
 
 ## Seguridad
 
@@ -100,7 +123,7 @@ La comprobación estática del repositorio no abre MetaTrader:
 python -m tools.verify_project
 ```
 
-Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y el
-vigilante `.mq4` con el MetaEditor de MT4. Consulta `ai_context/main.md` para el
+Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y los
+tres `.mq4` con el MetaEditor de MT4. Consulta `ai_context/main.md` para el
 contrato técnico completo.
 
