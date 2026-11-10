@@ -8,8 +8,14 @@ entrada genera una alerta y, tras persistir, una modificación. Lo mismo vale
 para el precio límite de una STOP LIMIT, que sólo se compara cuando el Master lo
 publica (esquema 3).
 
-Las pendientes asociadas a tickets Master ignorados se protegen primero y se
-retiran de todas las comprobaciones posteriores. Después se emparejan las
+Los dos lados se recorren por ticket ascendente, así que el resultado no
+depende del orden en que el terminal devuelve sus colecciones. Antes de nada se
+deshace la ambigüedad: cuando una pendiente Master admite dos o más copias
+libres compatibles, se ata la que ya coincide en todos los valores comparados.
+Ver [ambiguous_matching.md](ambiguous_matching.md).
+
+Las pendientes asociadas a tickets Master ignorados se protegen después y se
+retiran de todas las comprobaciones posteriores. Luego se emparejan las
 pendientes Master no ignoradas con la copia compatible más cercana en precio.
 `PMISS` cuenta Master no emparejadas; no compara únicamente tamaños de arrays.
 

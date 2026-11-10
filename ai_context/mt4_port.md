@@ -1,7 +1,7 @@
 # Port MT4 de Master y Slave
 
 `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_00_MULTI.mq4`
-son la traducción a MQL4 del Master MT5 v1.14 y del Slave MT5 v1.19. Conservan
+son la traducción a MQL4 del Master MT5 v1.14 y del Slave MT5 v1.20. Conservan
 el esquema de snapshot, el emparejamiento, los mensajes de Telegram y los
 límites de automatización. Lo que cambia es la API del terminal, no el
 contrato. Las decisiones de protocolo siguen en

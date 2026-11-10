@@ -10,7 +10,7 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 - `CopyMonitor_Master_MT5_v1_14_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_19_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_20_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_00_MULTI.mq4` y

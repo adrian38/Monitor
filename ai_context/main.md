@@ -10,6 +10,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
 - [development.md](development.md): flujo de edición, versionado y verificación.
 - [pending_matching.md](pending_matching.md): emparejamiento uno a uno de
   pendientes, detección de faltantes y política conservadora de borrado.
+- [ambiguous_matching.md](ambiguous_matching.md): desempate por valores cuando
+  dos posiciones o pendientes gemelas son indistinguibles en el snapshot.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
   identificadores de cuenta y datos operativos exigidos en cada aviso.
 - [automatic_corrections.md](automatic_corrections.md): alcance autorizado,

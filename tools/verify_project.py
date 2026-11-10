@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_14_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_19_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_20_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.

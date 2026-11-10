@@ -29,6 +29,13 @@ operación del Slave hacía leer el aviso como si la copia existiera. Una STOP L
 usa internamente pero no se muestra. Los valores cero aparecen como `SIN SL` o
 `SIN TP`.
 
+Un bloque de diferencia puede terminar con un `AVISO`: la pareja Master/Slave
+que se informa se fijó por el orden de apertura porque hay otra operación
+idéntica en la cuenta y ningún valor comparado las distingue. El
+emparejamiento es estable y reproducible, pero no es una identidad, así que el
+aviso pide revisarlo a mano. Ver
+[ambiguous_matching.md](ambiguous_matching.md).
+
 Los niveles son:
 
 - `🟠 COPYMONITOR — ALERTA`: intervención o revisión necesaria.

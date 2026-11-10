@@ -5,7 +5,7 @@
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
 //| Pending orders: normally ignored as copy expectations; optional   |
 //| confirmed EXTRA pending in Slave can be deleted.                  |
-//| Port MT4 del Slave MT5 v1.19 MULTI: mismo snapshot, mismas reglas |
+//| Port MT4 del Slave MT5 v1.20 MULTI: mismo snapshot, mismas reglas |
 //| de emparejamiento y los mismos limites de automatizacion.         |
 //+------------------------------------------------------------------+
 #property strict
@@ -176,6 +176,11 @@ struct Blocked { string key; datetime last_seen; };
 // contrato compartido con el Master y los dos EAs deben declarar el mismo
 // valor, asi que se queda como constante.
 #define CM_CHANNEL_MAX_LEN     32
+
+// Margen con el que dos costes de emparejamiento se consideran el mismo. Solo
+// absorbe el ruido de coma flotante: por encima de el manda el coste, y por
+// debajo manda el ticket mas bajo, que es el criterio estable.
+#define CM_MATCH_EPS           1e-6
 
 // Codigos de tipo que viajan en el snapshot. Son los de MQL5 porque el Master
 // puede ser MT5; los cuatro tipos pendientes de MT4 (OP_BUYLIMIT..OP_SELLSTOP)
@@ -1723,6 +1728,132 @@ double PosCost(const PosRec &m,const PosRec &s)
 {
    return MathAbs(m.price-s.price)/PointOf(s.symbol);
 }
+// Ningun emparejamiento puede depender del orden en que el terminal devuelve
+// sus colecciones: ese orden cambia en cuanto se cierra cualquier otra entrada
+// y haria que una pareja saltase de una evaluacion a la siguiente. Recorrer
+// los dos lados por ticket ascendente deja un resultado reproducible y, como
+// los dos brokers numeran de forma creciente, respeta el orden de apertura.
+void SortPosByTicket(PosRec &a[])
+{
+   int n=ArraySize(a);
+
+   for(int i=1;i<n;i++)
+   {
+      PosRec key=a[i];
+      int j=i-1;
+
+      while(j>=0 && a[j].ticket>key.ticket)
+      {
+         a[j+1]=a[j];
+         j--;
+      }
+      a[j+1]=key;
+   }
+}
+void MasterPosOrder(const Snap &snap,int &idx[])
+{
+   int n=ArraySize(snap.pos);
+   ArrayResize(idx,n);
+
+   for(int i=0;i<n;i++)
+      idx[i]=i;
+
+   for(int i=1;i<n;i++)
+   {
+      int key=idx[i];
+      int j=i-1;
+
+      while(j>=0 && snap.pos[idx[j]].ticket>snap.pos[key].ticket)
+      {
+         idx[j+1]=idx[j];
+         j--;
+      }
+      idx[j+1]=key;
+   }
+}
+// Dos posiciones del mismo simbolo, tipo, volumen y precio de entrada son
+// indistinguibles con los campos que publica el snapshot. Cuando el Master
+// cambia el SL o el TP de una de ellas, lo unico que sigue identificando a la
+// otra es que sus niveles ya coinciden con los del Master.
+bool PosStopsAgree(const PosRec &m,const PosRec &s)
+{
+   // Sin ninguna comprobacion de niveles activa no hay identidad que leer.
+   if(!InpCheckStopLoss && !InpCheckTakeProfit)
+      return false;
+
+   double tol=InpSLTPTolerancePoints*PointOf(s.symbol);
+
+   if(InpCheckStopLoss && !StopEq(m.sl,s.sl,tol))
+      return false;
+   if(InpCheckTakeProfit && !StopEq(m.tp,s.tp,tol))
+      return false;
+
+   return true;
+}
+int PosCandidateCount(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[])
+{
+   int n=0;
+   for(int j=0;j<ArraySize(sp);j++)
+      if(!su[j] && PosCompatible(o,m,sp[j]))
+         n++;
+   return n;
+}
+// Desempate por niveles. Solo interviene cuando la posicion Master admite mas
+// de una copia libre: con una sola candidata el precio ya decide y el
+// desempate no debe alterar ese resultado.
+int MatchPosByStops(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[])
+{
+   if(PosCandidateCount(o,m,sp,su)<2)
+      return -1;
+
+   int best=-1;
+   double cost=1e100;
+
+   for(int j=0;j<ArraySize(sp);j++)
+   {
+      if(su[j] || !PosCompatible(o,m,sp[j]))
+         continue;
+      if(!PosStopsAgree(m,sp[j]))
+         continue;
+
+      double c=PosCost(m,sp[j]);
+
+      if(c<cost-CM_MATCH_EPS)
+      {
+         cost=c;
+         best=j;
+      }
+   }
+   return best;
+}
+// Devuelve ademas cuantas copias empatan en el coste minimo. Con mas de una,
+// la pareja no la decide ningun dato: la fija el orden de apertura.
+int MatchPosByPrice(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[],int &tied)
+{
+   int best=-1;
+   double cost=1e100;
+   tied=0;
+
+   for(int j=0;j<ArraySize(sp);j++)
+   {
+      if(su[j] || !PosCompatible(o,m,sp[j]))
+         continue;
+
+      double c=PosCost(m,sp[j]);
+
+      // Estricto a la baja: con el array ordenado por ticket, un coste igual
+      // deja ganar siempre a la copia mas antigua.
+      if(c<cost-CM_MATCH_EPS)
+      {
+         cost=c;
+         best=j;
+         tied=1;
+      }
+      else if(best>=0 && c<=cost+CM_MATCH_EPS)
+         tied++;
+   }
+   return best;
+}
 int CandIndex(const string key)
 {
    for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].key==key)return i;
@@ -1773,63 +1904,73 @@ void CheckOpen(const Owner &o,const Snap &snap)
 {
    PosRec sp[];
    SlavePosForOwner(o,sp);
+   SortPosByTicket(sp);
+
+   int order[];
+   MasterPosOrder(snap,order);
 
    bool su[];
    ArrayResize(su,ArraySize(sp));
    ArrayInitialize(su,false);
 
+   int assign[];
+   ArrayResize(assign,ArraySize(snap.pos));
+   ArrayInitialize(assign,-1);
+
    bool problems=false;
    string details="";
 
-   // 1) Protect the Slave copy corresponding to every ignored MASTER ticket.
-   //    The ignored pair is removed from all later mismatch / SL / TP logic.
-   for(int i=0;i<ArraySize(snap.pos);i++)
+   // 1) Resolver primero la ambiguedad: cuando varias copias libres encajan
+   //    con la misma posicion Master, la suya es la que ya lleva su SL y su
+   //    TP. Atarlas antes que nada evita corregir la posicion equivocada
+   //    cuando el Master mueve los niveles de una de dos posiciones gemelas.
+   for(int k=0;k<ArraySize(order);k++)
    {
-      if(!MasterTicketIgnored(o.channel,snap.pos[i].ticket))
+      int i=order[k];
+      int paired=MatchPosByStops(o,snap.pos[i],sp,su);
+
+      if(paired<0)
          continue;
 
-      int best=-1;
-      double cost=1e100;
-
-      for(int j=0;j<ArraySize(sp);j++)
-      {
-         if(su[j] || !PosCompatible(o,snap.pos[i],sp[j]))
-            continue;
-
-         double c=PosCost(snap.pos[i],sp[j]);
-
-         if(c<cost)
-         {
-            cost=c;
-            best=j;
-         }
-      }
-
-      if(best>=0)
-         su[best]=true;
+      assign[i]=paired;
+      su[paired]=true;
    }
 
-   // 2) Monitor only non-ignored MASTER positions.
-   for(int i=0;i<ArraySize(snap.pos);i++)
+   // 2) Protect the Slave copy corresponding to every ignored MASTER ticket.
+   //    The ignored pair is removed from all later mismatch / SL / TP logic.
+   for(int k=0;k<ArraySize(order);k++)
    {
+      int i=order[k];
+
+      if(assign[i]>=0 || !MasterTicketIgnored(o.channel,snap.pos[i].ticket))
+         continue;
+
+      int ignored_tied=0;
+      int paired=MatchPosByPrice(o,snap.pos[i],sp,su,ignored_tied);
+
+      if(paired>=0)
+      {
+         assign[i]=paired;
+         su[paired]=true;
+      }
+   }
+
+   // 3) Monitor only non-ignored MASTER positions.
+   for(int k=0;k<ArraySize(order);k++)
+   {
+      int i=order[k];
+
       if(MasterTicketIgnored(o.channel,snap.pos[i].ticket))
          continue;
 
-      int best=-1;
-      double cost=1e100;
+      int best=assign[i];
+      bool by_order=false;
 
-      for(int j=0;j<ArraySize(sp);j++)
+      if(best<0)
       {
-         if(su[j] || !PosCompatible(o,snap.pos[i],sp[j]))
-            continue;
-
-         double c=PosCost(snap.pos[i],sp[j]);
-
-         if(c<cost)
-         {
-            cost=c;
-            best=j;
-         }
+         int tied=0;
+         best=MatchPosByPrice(o,snap.pos[i],sp,su,tied);
+         by_order=(tied>1);
       }
 
       if(best<0)
@@ -1883,6 +2024,12 @@ void CheckOpen(const Owner &o,const Snap &snap)
             problem_detail+=
                "\nTP Master: "+StopText(snap.pos[i].tp,"SIN TP")+
                "\nTP Slave: "+StopText(sp[best].tp,"SIN TP");
+
+         if(by_order)
+            problem_detail+=
+               "\n\nAVISO:\nHay otra entrada idéntica en la cuenta y ningún valor comparado "+
+               "las distingue. La pareja se ha fijado por el orden de apertura, que es "+
+               "estable pero no es una identidad: conviene revisarla a mano.";
 
          string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+problem_detail+
             "\n\nACCIÓN:\nEsperando que el problema persista antes de corregirlo automáticamente.";
@@ -2004,6 +2151,130 @@ bool OrdCompatible(const Owner &o,const OrdRec &m,const OrdRec &s)
    if(m.type!=s.type)return false;
    if(!VolEq(s.symbol,s.vol,m.vol*o.mult))return false;
    return true;
+}
+void SortOrdByTicket(OrdRec &a[])
+{
+   int n=ArraySize(a);
+
+   for(int i=1;i<n;i++)
+   {
+      OrdRec key=a[i];
+      int j=i-1;
+
+      while(j>=0 && a[j].ticket>key.ticket)
+      {
+         a[j+1]=a[j];
+         j--;
+      }
+      a[j+1]=key;
+   }
+}
+void MasterOrdOrder(const Snap &snap,int &idx[])
+{
+   int n=ArraySize(snap.ord);
+   ArrayResize(idx,n);
+
+   for(int i=0;i<n;i++)
+      idx[i]=i;
+
+   for(int i=1;i<n;i++)
+   {
+      int key=idx[i];
+      int j=i-1;
+
+      while(j>=0 && snap.ord[idx[j]].ticket>snap.ord[key].ticket)
+      {
+         idx[j+1]=idx[j];
+         j--;
+      }
+      idx[j+1]=key;
+   }
+}
+// El precio no entra en la compatibilidad de pendientes, asi que dos ordenes
+// gemelas solo se distinguen por los valores que el Slave compara. La copia
+// que ya coincide en todos ellos es la que esta en orden; la que queda libre
+// es la que el Master ha movido.
+bool OrdValuesAgree(const OrdRec &m,const OrdRec &s)
+{
+   double point=PointOf(s.symbol);
+   double stop_tol=InpSLTPTolerancePoints*point;
+   double price_tol=InpPendingPriceTolerancePoints*point;
+
+   if(!PriceEq(m.price,s.price,price_tol))
+      return false;
+   if(InpCheckStopLoss && !StopEq(m.sl,s.sl,stop_tol))
+      return false;
+   if(InpCheckTakeProfit && !StopEq(m.tp,s.tp,stop_tol))
+      return false;
+   // El precio limite solo se compara cuando el Master lo publica.
+   if(IsStopLimitType(m.type) && m.stoplimit>0 &&
+      !PriceEq(m.stoplimit,s.stoplimit,price_tol))
+      return false;
+
+   return true;
+}
+int OrdCandidateCount(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[])
+{
+   int n=0;
+   for(int s=0;s<ArraySize(so);s++)
+      if(!used[s] && OrdCompatible(o,m,so[s]))
+         n++;
+   return n;
+}
+// Desempate por valores. Solo interviene cuando la orden Master admite mas de
+// una copia libre: con una sola candidata el precio ya decide.
+int MatchOrdByValues(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[])
+{
+   if(OrdCandidateCount(o,m,so,used)<2)
+      return -1;
+
+   int best=-1;
+   double best_delta=1e100;
+
+   for(int s=0;s<ArraySize(so);s++)
+   {
+      if(used[s] || !OrdCompatible(o,m,so[s]))
+         continue;
+      if(!OrdValuesAgree(m,so[s]))
+         continue;
+
+      double delta=MathAbs(m.price-so[s].price);
+
+      if(delta<best_delta-CM_MATCH_EPS)
+      {
+         best_delta=delta;
+         best=s;
+      }
+   }
+   return best;
+}
+// Devuelve ademas cuantas copias empatan en la distancia minima. Con mas de
+// una, la pareja no la decide ningun dato: la fija el orden de apertura.
+int MatchOrdByPrice(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[],int &tied)
+{
+   int best=-1;
+   double best_delta=1e100;
+   tied=0;
+
+   for(int s=0;s<ArraySize(so);s++)
+   {
+      if(used[s] || !OrdCompatible(o,m,so[s]))
+         continue;
+
+      double delta=MathAbs(m.price-so[s].price);
+
+      // Estricto a la baja: con el array ordenado por ticket, una distancia
+      // igual deja ganar siempre a la copia mas antigua.
+      if(delta<best_delta-CM_MATCH_EPS)
+      {
+         best_delta=delta;
+         best=s;
+         tied=1;
+      }
+      else if(best>=0 && delta<=best_delta+CM_MATCH_EPS)
+         tied++;
+   }
+   return best;
 }
 int BlockedIndex(const string key)
 {
@@ -2280,41 +2551,56 @@ void CheckPending(const Owner &o,const Snap &snap)
 {
    OrdRec so[];
    SlaveOrdForOwner(o,so);
+   SortOrdByTicket(so);
+
+   int order[];
+   MasterOrdOrder(snap,order);
 
    bool slave_protected[];
    ArrayResize(slave_protected,ArraySize(so));
    ArrayInitialize(slave_protected,false);
 
+   int assign[];
+   ArrayResize(assign,ArraySize(snap.ord));
+   ArrayInitialize(assign,-1);
+
+   // Resolver primero la ambiguedad: cuando varias copias libres encajan con
+   // la misma orden Master, la suya es la que ya coincide en todos los valores
+   // comparados. Atarlas antes que nada evita modificar la orden equivocada
+   // cuando el Master mueve una de dos pendientes gemelas.
+   for(int k=0;k<ArraySize(order);k++)
+   {
+      int m=order[k];
+      int paired=MatchOrdByValues(o,snap.ord[m],so,slave_protected);
+
+      if(paired<0)
+         continue;
+
+      assign[m]=paired;
+      slave_protected[paired]=true;
+   }
+
    // First protect any Slave pending that corresponds to an ignored MASTER
    // pending ticket. It must never be reported or auto-deleted because the
    // user deliberately excluded that MASTER ticket from monitoring.
-   for(int m=0;m<ArraySize(snap.ord);m++)
+   for(int k=0;k<ArraySize(order);k++)
    {
+      int m=order[k];
+
       if(!MasterTicketIgnored(o.channel,snap.ord[m].ticket))
          continue;
 
-      int best=-1;
-      double best_delta=1e100;
+      int best=assign[m];
 
-      for(int s=0;s<ArraySize(so);s++)
+      if(best<0)
       {
-         if(slave_protected[s])
-            continue;
-
-         if(!OrdCompatible(o,snap.ord[m],so[s]))
-            continue;
-
-         double delta=MathAbs(snap.ord[m].price-so[s].price);
-
-         if(delta<best_delta)
-         {
-            best_delta=delta;
-            best=s;
-         }
+         int ignored_tied=0;
+         best=MatchOrdByPrice(o,snap.ord[m],so,slave_protected,ignored_tied);
       }
 
       if(best>=0)
       {
+         assign[m]=best;
          slave_protected[best]=true;
          RemoveProblem("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
          ClearMarketWait("DELETE|"+o.channel+"|"+TicketText(so[best].ticket));
@@ -2334,32 +2620,29 @@ void CheckPending(const Owner &o,const Snap &snap)
    ArrayResize(master_matched,ArraySize(snap.ord));
    ArrayInitialize(master_matched,false);
 
-   for(int m=0;m<ArraySize(snap.ord);m++)
+   for(int k=0;k<ArraySize(order);k++)
    {
+      int m=order[k];
+
       if(MasterTicketIgnored(o.channel,snap.ord[m].ticket))
       {
          master_matched[m]=true;
          continue;
       }
 
-      int best=-1;
-      double best_delta=1e100;
+      int best=assign[m];
+      bool by_order=false;
 
-      for(int s=0;s<ArraySize(so);s++)
+      if(best<0)
       {
-         if(slave_protected[s] || !OrdCompatible(o,snap.ord[m],so[s]))
-            continue;
-
-         double delta=MathAbs(snap.ord[m].price-so[s].price);
-         if(delta<best_delta)
-         {
-            best_delta=delta;
-            best=s;
-         }
+         int tied=0;
+         best=MatchOrdByPrice(o,snap.ord[m],so,slave_protected,tied);
+         by_order=(tied>1);
       }
 
       if(best>=0)
       {
+         assign[m]=best;
          master_matched[m]=true;
          slave_protected[best]=true;
          string matched_create="CREATE|"+o.channel+"|"+TicketText(snap.ord[m].ticket);
@@ -2416,6 +2699,12 @@ void CheckPending(const Owner &o,const Snap &snap)
             if(tp_bad)
                detail+="\nTP Master: "+StopText(snap.ord[m].tp,"SIN TP")+
                        "\nTP Slave: "+StopText(so[best].tp,"SIN TP");
+
+            if(by_order)
+               detail+=
+               "\n\nAVISO:\nHay otra entrada idéntica en la cuenta y ningún valor comparado "+
+               "las distingue. La pareja se ha fijado por el orden de apertura, que es "+
+               "estable pero no es una identidad: conviene revisarla a mano.";
 
             if(MarketWaiting(fix_key))
                KeepAlert(alert_key);
