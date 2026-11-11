@@ -30,8 +30,10 @@ persistente se avisa y queda fuera de toda corrección automática.
 
 Las posiciones y las pendientes comparten estas fases:
 
-1. **Identificación por valores.** Interviene cuando una entrada Master admite
-   dos o más copias libres compatibles o cuando se evalúan pendientes en MT5.
+1. **Identificación por valores.** En MT5 también interviene cuando hay una
+   única copia libre compatible. Así se enlaza por niveles antes de que la
+   protección de un ticket ignorado pueda apartar la copia de otro Master.
+   En MT4 se aplica a posiciones cuando hay varias copias libres compatibles.
    Se enlaza la candidata que coincide
    en todo lo que el Slave compara: SL y TP en posiciones; precio de entrada,
    precio límite, SL y TP en pendientes. Los campos desactivados por

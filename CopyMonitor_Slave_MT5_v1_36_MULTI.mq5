@@ -2684,22 +2684,10 @@ bool PosStopsAgree(const PosRec &m,const PosRec &s)
 
    return true;
 }
-int PosCandidateCount(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[])
-{
-   int n=0;
-   for(int j=0;j<ArraySize(sp);j++)
-      if(!su[j] && PosCompatible(o,m,sp[j]))
-         n++;
-   return n;
-}
-// Desempate por niveles. Solo interviene cuando la posicion Master admite mas
-// de una copia libre: con una sola candidata el precio ya decide y el
-// desempate no debe alterar ese resultado.
+// Busca la copia compatible cuyos niveles coinciden, incluso si solo hay una.
+// El llamador comprueba que esa copia identifica a un solo ticket Master.
 int MatchPosByStops(const Owner &o,const PosRec &m,const PosRec &sp[],const bool &su[])
 {
-   if(PosCandidateCount(o,m,sp,su)<2)
-      return -1;
-
    int best=-1;
    double cost=1e100;
    int tied=0;
@@ -2956,10 +2944,10 @@ void CheckOpen(const Owner &o,const Snap &snap)
    bool read_log_links=false;
    bool log_links_valid=false;
 
-   // 1) Resolver primero la ambiguedad: cuando varias copias libres encajan
-   //    con la misma posicion Master, la suya es la que ya lleva su SL y su
-   //    TP. Atarlas antes que nada evita corregir la posicion equivocada
-   //    cuando el Master mueve los niveles de una de dos posiciones gemelas.
+   // 1) Asignar las parejas que los niveles identifican en ambos sentidos.
+   //    Una sola copia puede encajar por precio con varios tickets Master.
+   //    Identificarla aqui evita que un ticket ignorado aparte una copia
+   //    cuyos niveles corresponden a otra posicion.
    for(int k=0;k<ArraySize(order);k++)
    {
       int i=order[k];
