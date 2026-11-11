@@ -28,10 +28,11 @@ persistente se avisa y queda fuera de toda corrección automática.
 
 ## Fases del emparejamiento
 
-Iguales para posiciones y para pendientes:
+Las posiciones y las pendientes comparten estas fases:
 
-1. **Identificación por valores.** Sólo interviene cuando una entrada Master admite
-   dos o más copias libres compatibles. Entre ellas se ata la que ya coincide
+1. **Identificación por valores.** Interviene cuando una entrada Master admite
+   dos o más copias libres compatibles o cuando se evalúan pendientes en MT5.
+   Se enlaza la candidata que coincide
    en todo lo que el Slave compara: SL y TP en posiciones; precio de entrada,
    precio límite, SL y TP en pendientes. Los campos desactivados por
    configuración no participan, y sin ninguna comprobación de niveles activa
@@ -46,9 +47,6 @@ Iguales para posiciones y para pendientes:
    de la fase 1 y, si no tiene, una copia libre sólo cuando es la única más
    cercana en precio y la copia no encaja a la vez con otra Master libre.
 
-Una sola candidata compatible nunca entra en la fase 1: sin ambigüedad el
-precio ya decide y el desempate no debe alterar ese resultado.
-
 4. **Volumen distinto, en una segunda pasada.** Lo que se quedó sin copia
    exacta se vuelve a mirar ignorando el volumen. Esta pasada va *después* de
    que todas las entradas Master hayan tomado la suya, y el motivo es el mismo
@@ -60,6 +58,14 @@ precio ya decide y el desempate no debe alterar ese resultado.
    exactamente nadie más. Sigue exigiéndose candidata única desde los dos
    lados; si varias Master pueden explicar la misma copia de volumen distinto,
    todas quedan protegidas y se avisa de ambigüedad sin crear ni modificar.
+
+En MT5 desde la v1.33, una única pendiente Slave también entra en la primera
+fase. Dos pendientes Master pueden compartir símbolo, tipo y volumen y tener
+precios diferentes. Si la copia coincide en valores sólo con una de ellas,
+se le asigna antes de evaluar la otra. Justo antes de crear, y al reconciliar
+un envío con resultado incierto, se repite esa asignación sobre el snapshot
+actual y las órdenes vivas. Una candidata restante que pueda ser la copia
+bloquea la creación hasta que se pueda identificar.
 
 ## Cuando no hay nada que distinga
 

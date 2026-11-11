@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_31_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_33_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.31"
-#property description "CopyMonitor Slave MT5 v1.31 MULTI"
+#property version "1.33"
+#property description "CopyMonitor Slave MT5 v1.33 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -3508,21 +3508,9 @@ bool OrdValuesAgree(const OrdRec &m,const OrdRec &s)
 
    return true;
 }
-int OrdCandidateCount(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[])
-{
-   int n=0;
-   for(int s=0;s<ArraySize(so);s++)
-      if(!used[s] && OrdCompatible(o,m,so[s]))
-         n++;
-   return n;
-}
-// Desempate por valores. Solo interviene cuando la orden Master admite mas de
-// una copia libre: con una sola candidata el precio ya decide.
+// Un único Slave también puede ser candidato de varios tickets Master.
 int MatchOrdByValues(const Owner &o,const OrdRec &m,const OrdRec &so[],const bool &used[])
 {
-   if(OrdCandidateCount(o,m,so,used)<2)
-      return -1;
-
    int best=-1;
    double best_delta=1e100;
    int tied=0;
@@ -3656,6 +3644,25 @@ bool OrdSlaveIdentifiesMaster(const Owner &o,const Snap &snap,const int current,
       }
    }
    return compatible<=1 || (current_agrees && agreeing==1);
+}
+void AssignPendingByValues(const Owner &o,const Snap &snap,const int &order[],
+                           const OrdRec &slave[],int &assign[],bool &used[])
+{
+   ArrayResize(assign,ArraySize(snap.ord));
+   ArrayInitialize(assign,-1);
+   ArrayResize(used,ArraySize(slave));
+   ArrayInitialize(used,false);
+
+   for(int k=0;k<ArraySize(order);k++)
+   {
+      int m=order[k];
+      int s=MatchOrdByValues(o,snap.ord[m],slave,used);
+      if(s<0 || !OrdSlaveIdentifiesMaster(o,snap,m,slave[s],assign,false))
+         continue;
+
+      assign[m]=s;
+      used[s]=true;
+   }
 }
 int PendingOrderIndex(const OrdRec &orders[],const ulong ticket)
 {
@@ -3849,24 +3856,35 @@ bool SendPendingOrder(const Owner &o,const OrdRec &master,const string symbol,
                             master.stoplimit,master.price,master.sl,master.tp,
                             ORDER_TIME_GTC,0,o.comment);
 }
-int CountOwnedCompatiblePending(const Owner &o,const OrdRec &master,ulong &ticket)
+// Una copia asignada por sus valores a otro ticket Master no cuenta para este
+// ticket. Una candidata restante sin enlace inequívoco impide crear otra.
+bool ReconcilePendingCreation(const Owner &o,const Snap &snap,const int m,
+                              ulong &ticket,string &reason)
 {
    ticket=0;
-   OrdRec orders[];
-   SlaveOrdForOwner(o,orders);
-   int matches=0;
+   OrdRec slave[];
+   SlaveOrdForOwner(o,slave);
+   SortOrdByTicket(slave);
+   int order[],assign[];
+   bool used[];
+   MasterOrdOrder(snap,order);
+   AssignPendingByValues(o,snap,order,slave,assign,used);
 
-   for(int i=0;i<ArraySize(orders);i++)
+   if(assign[m]>=0)
    {
-      if(!OrdCompatible(o,master,orders[i])) continue;
-      matches++;
-      ticket=orders[i].ticket;
+      ticket=slave[assign[m]].ticket;
+      return true;
    }
-   return matches;
-}
-bool FindUniqueOwnedPending(const Owner &o,const OrdRec &master,ulong &ticket)
-{
-   return CountOwnedCompatiblePending(o,master,ticket)==1;
+
+   for(int s=0;s<ArraySize(slave);s++)
+   {
+      if(used[s] || !OrdCompatibleIgnoringVolume(o,snap.ord[m],slave[s]))
+         continue;
+
+      reason="Hay una pendiente propia que podría corresponder a este ticket Master. Se requiere un enlace inequívoco.";
+      return false;
+   }
+   return true;
 }
 bool SameMasterOrderValues(const OrdRec &a,const OrdRec &b)
 {
@@ -3941,25 +3959,21 @@ int CreatePendingCopy(const Owner &o,const OrdRec &requested_master,ulong &creat
                               master.stoplimit,blocked_reason))
       return CM_CREATE_BLOCKED;
 
-   // Reconciliar justo antes de enviar: Copyix puede haber creado la copia
-   // durante la espera o durante las comprobaciones de este mismo ciclo.
-   int existing=CountOwnedCompatiblePending(o,master,created_ticket);
-   if(existing==1)
-      return CM_CREATE_PRESENT;
-   if(existing>1)
-   {
-      blocked_reason="Hay varias pendientes propias compatibles; el enlace es ambiguo.";
+   // Reconciliar contra todo el snapshot actual: otra orden del mismo
+   // símbolo, tipo y volumen puede tener su propia copia.
+   Snap latest;
+   if(!ReadTrustedSnapshotNow(o,latest,blocked_reason))
       return CM_CREATE_BLOCKED;
-   }
-
-   OrdRec latest_master;
-   if(!CurrentMasterOrder(o,master.ticket,latest_master,blocked_reason))
-      return CM_CREATE_BLOCKED;
-   if(!SameMasterOrderValues(master,latest_master))
+   int m=PendingOrderIndex(latest.ord,master.ticket);
+   if(m<0 || !SameMasterOrderValues(master,latest.ord[m]))
    {
       blocked_reason="La pendiente Master cambió durante la revalidación; se evaluará de nuevo.";
       return CM_CREATE_BLOCKED;
    }
+   if(!ReconcilePendingCreation(o,latest,m,created_ticket,blocked_reason))
+      return CM_CREATE_BLOCKED;
+   if(created_ticket>0)
+      return CM_CREATE_PRESENT;
 
    g_trade.SetTypeFillingBySymbol(symbol);
    ResetLastError();
@@ -3982,11 +3996,17 @@ int CreatePendingCopy(const Owner &o,const OrdRec &requested_master,ulong &creat
       // TIMEOUT/CONNECTION puede significar que el servidor acepto la orden y
       // se perdio la respuesta. Reconciliar primero; si sigue sin saberse, no
       // reintentar automaticamente porque podria duplicarla.
-      if(FindUniqueOwnedPending(o,master,created_ticket))
-         return CM_CREATE_DONE;
-
-      if(TradeRetcodeIndeterminate(g_trade.ResultRetcode()) ||
-         (TradeRequestSucceeded(sent) && created_ticket==0))
+      bool uncertain=TradeRetcodeIndeterminate(g_trade.ResultRetcode()) ||
+                     (TradeRequestSucceeded(sent) && created_ticket==0);
+      if(ReadTrustedSnapshotNow(o,latest,blocked_reason))
+      {
+         m=PendingOrderIndex(latest.ord,master.ticket);
+         if(m>=0 && SameMasterOrderValues(master,latest.ord[m]) &&
+            ReconcilePendingCreation(o,latest,m,created_ticket,blocked_reason) &&
+            created_ticket>0)
+            return CM_CREATE_DONE;
+      }
+      if(uncertain)
          return CM_CREATE_UNCERTAIN;
 
       return CM_CREATE_FAILED;
@@ -4204,8 +4224,9 @@ void ResolveVanishedAlerts(const Owner &o,const Snap &snap)
          continue;
       }
 
-      // ORDMISS|canal|master y PEARLY|canal|master
-      if((f[0]=="ORDMISS" || f[0]=="PEARLY") && n==3 && f[1]==o.channel)
+      // Avisos de pendientes ligados al ticket Master.
+      if((f[0]=="ORDMISS" || f[0]=="PEARLY" || f[0]=="PAMBMASTER") &&
+         n==3 && f[1]==o.channel)
       {
          ulong ticket=(ulong)StringToInteger(f[2]);
          if(ticket>0 && MasterOrderPresent(snap,ticket)) continue;
@@ -4231,35 +4252,13 @@ void CheckPending(const Owner &o,const Snap &snap)
    int order[];
    MasterOrdOrder(snap,order);
 
+   int assign[];
    bool slave_protected[];
-   ArrayResize(slave_protected,ArraySize(so));
-   ArrayInitialize(slave_protected,false);
+   AssignPendingByValues(o,snap,order,so,assign,slave_protected);
 
    bool ambiguous_slave[];
    ArrayResize(ambiguous_slave,ArraySize(so));
    ArrayInitialize(ambiguous_slave,false);
-
-   int assign[];
-   ArrayResize(assign,ArraySize(snap.ord));
-   ArrayInitialize(assign,-1);
-
-   // Resolver primero la ambiguedad: cuando varias copias libres encajan con
-   // la misma orden Master, la suya es la que ya coincide en todos los valores
-   // comparados. Atarlas antes que nada evita modificar la orden equivocada
-   // cuando el Master mueve una de dos pendientes gemelas.
-   for(int k=0;k<ArraySize(order);k++)
-   {
-      int m=order[k];
-      int paired=MatchOrdByValues(o,snap.ord[m],so,slave_protected);
-
-      if(paired<0)
-         continue;
-      if(!OrdSlaveIdentifiesMaster(o,snap,m,so[paired],assign,false))
-         continue;
-
-      assign[m]=paired;
-      slave_protected[paired]=true;
-   }
 
    // First protect any Slave pending that corresponds to an ignored MASTER
    // pending ticket. It must never be reported or auto-deleted because the
@@ -4359,11 +4358,6 @@ void CheckPending(const Owner &o,const Snap &snap)
          continue;
       }
 
-      ResolveAlert(ambiguity_key,
-         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-         "\n\nPROBLEMA RESUELTO:\nLa orden Master ya no presenta un enlace ambiguo."+
-         "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket));
-
       // Sin copia exacta, la decision se aplaza a una segunda pasada: una
       // copia con otro volumen no puede reclamarse hasta que todas las
       // ordenes Master hayan tomado la suya, o se le robaria la copia a la
@@ -4379,6 +4373,12 @@ void CheckPending(const Owner &o,const Snap &snap)
          assign[m]=best;
          master_matched[m]=true;
          slave_protected[best]=true;
+
+         ResolveAlert(ambiguity_key,
+            AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+            "\n\nPROBLEMA RESUELTO:\nSe identificó la copia de la orden pendiente."+
+            "\nTicket Master: "+StringFormat("%I64u",snap.ord[m].ticket)+
+            "\nTicket Slave: "+StringFormat("%I64u",so[best].ticket));
 
          // El volumen vuelve a ser el esperado: se cierra con la misma pareja
          // de tickets con la que se abrió el aviso.
@@ -4562,11 +4562,12 @@ void CheckPending(const Owner &o,const Snap &snap)
          !OrdSlaveIdentifiesMaster(o,snap,m,so[vol_match],assign,true))
          vol_tied=2;
 
+      string ambiguity_key="PAMBMASTER|"+o.channel+"|"+
+                           StringFormat("%I64u",snap.ord[m].ticket);
       if(vol_tied>1)
       {
          master_matched[m]=true;
-         PersistAlert("PAMBMASTER|"+o.channel+"|"+
-                      StringFormat("%I64u",snap.ord[m].ticket),
+         PersistAlert(ambiguity_key,
             AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nNo se puede decidir qué pendiente Slave corresponde a este ticket Master, ni siquiera ignorando el volumen.\n\n"+
             MasterPendingDetails(o,snap.ord[m])+
@@ -4583,6 +4584,8 @@ void CheckPending(const Owner &o,const Snap &snap)
          master_matched[m]=true;
          slave_protected[vol_match]=true;
          assign[m]=vol_match;
+         // PVOL toma el relevo y explica qué copia se encontró.
+         ClearAlert(ambiguity_key);
 
          string vol_create="CREATE|"+o.channel+"|"+StringFormat("%I64u",snap.ord[m].ticket);
          RemoveProblem(vol_create);
@@ -4610,6 +4613,8 @@ void CheckPending(const Owner &o,const Snap &snap)
 
          continue;
       }
+      // Si la copia sigue faltando, ORDMISS toma el relevo.
+      ClearAlert(ambiguity_key);
    }
 
    // Missing-pending monitoring, when explicitly enabled, reports actual
@@ -4640,6 +4645,13 @@ void CheckPending(const Owner &o,const Snap &snap)
             continue;
          }
 
+         // La ambigüedad evita crear duplicados, pero no demuestra una copia.
+         if(master_matched[m] && assign[m]<0)
+         {
+            ClearAlert(miss_key);
+            continue;
+         }
+
          bool early_exact_volume=true;
          int early=(master_matched[m]
                     ? -1
@@ -4651,12 +4663,13 @@ void CheckPending(const Owner &o,const Snap &snap)
                "\n\nPROBLEMA RESUELTO:\nYa no hay ninguna posición activa del Slave que pueda ser esa orden pendiente activada antes de tiempo.\n\n"+
                MasterPendingDetails(o,snap.ord[m]));
 
-         if(master_matched[m])
+         if(assign[m]>=0)
          {
             ResolveAlert(miss_key,
                AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
                "\n\nPROBLEMA RESUELTO:\nLa copia de la orden pendiente ya existe en la cuenta Slave.\n\n"+
-               MasterPendingDetails(o,snap.ord[m]));
+               MasterPendingDetails(o,snap.ord[m])+
+               "\nTicket Slave: "+StringFormat("%I64u",so[assign[m]].ticket));
             continue;
          }
 
@@ -4696,11 +4709,16 @@ void CheckPending(const Owner &o,const Snap &snap)
          if(MarketWaiting("CREATE|"+suffix))
             KeepAlert(miss_key);
          else
+         {
+            string action=InpAutoCreateMissingPending
+               ? "Esperando que el problema persista antes de crear la orden automáticamente."
+               : "CopyMonitor tiene desactivada la creación automática de pendientes. Este aviso es informativo.";
             PersistAlert(miss_key,
                AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
                "\n\nPROBLEMA:\nFalta la copia de una orden pendiente.\n\n"+
                MasterPendingDetails(o,snap.ord[m])+
-               "\n\nACCIÓN:\nEsperando que el problema persista antes de crear la orden automáticamente.");
+               "\n\nACCIÓN:\n"+action);
+         }
       }
 
       if(missing_pending>0)
@@ -4884,10 +4902,8 @@ void CheckPending(const Owner &o,const Snap &snap)
          continue;
       }
 
-      ResolveAlert(ambiguous_key,
-         AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-         "\n\nPROBLEMA RESUELTO:\nSe confirmó la ausencia de la pendiente Master vinculada."+
-         "\nTicket Slave: "+ticket+master_detail);
+      // PEXTRA toma el relevo del bloqueo hasta que la orden desaparezca.
+      ClearAlert(ambiguous_key);
 
       string key="PEXTRA|"+o.channel+"|"+ticket;
       string detail=
@@ -5425,7 +5441,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.31 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.33 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5481,7 +5497,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.31 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.33 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";

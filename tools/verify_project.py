@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_31_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_33_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
@@ -411,7 +411,6 @@ BLIND_SPOT_TOKENS = (
     "SaveTgQueue(",
     # An uncertain create result must never be retried blindly.
     "CM_CREATE_UNCERTAIN",
-    "FindUniqueOwnedPending(",
     "LoadCreateBlocks(",
     "SaveCreateBlocks(",
     "g_instance_lock_owned && g_instance_state_loaded",
@@ -918,6 +917,8 @@ def main() -> int:
             "RefreshPendingLinks(",
             "UniquePendingDeletePair(",
             "MasterStillAbsentBeforeDelete(",
+            "AssignPendingByValues(",
+            "ReconcilePendingCreation(",
         ),
         failures,
     )
@@ -941,7 +942,8 @@ def main() -> int:
     check_blind_spots(
         "slave mt4",
         mt4["slave"],
-        ("IsConnected()", "MasterEmptyConfirmed(", "MasterStillEmptyBeforeDelete("),
+        ("IsConnected()", "MasterEmptyConfirmed(", "MasterStillEmptyBeforeDelete(",
+         "FindUniqueOwnedPending("),
         failures,
     )
     check_tunables(mt4, failures)

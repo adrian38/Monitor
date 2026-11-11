@@ -46,7 +46,7 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | `PVALUES\|canal\|master\|slave` | Valores distintos en una pendiente | coinciden, o el ticket Slave deja de existir |
 | `PEXTRA\|canal\|ticketSlave` | Pendiente extra en el Slave | se empareja o deja de existir |
 | `PAMB\|canal\|ticketSlave` | Pendiente Slave sin Master emparejable | se empareja o deja de existir |
-| `PAMBMASTER\|canal\|ticketMaster` | Enlace ambiguo de una pendiente | queda una única copia compatible |
+| `PAMBMASTER\|canal\|ticketMaster` | Enlace ambiguo de una pendiente | se identifica una copia o desaparece la pendiente Master |
 | `SCHEMA\|canal` | Esquema o canal del snapshot incompatibles | el snapshot vuelve a ser legible |
 | `STALE\|canal` | Snapshot ausente o caducado | vuelven los datos recientes |
 | `COUNT\|canal` | Las cantidades no cuadran por algo sin aviso propio | todo vuelve a explicarse |
@@ -64,6 +64,10 @@ habría que comparar son una foto del pasado.
 
 `FAIL|<clave>` y `PBLOCK|<clave>` acompañan a la clave del problema cuando una
 corrección falla o queda bloqueada, y se cierran con ella.
+
+En MT5, una candidata ambigua no autoriza el `RESUELTO` de `ORDMISS`. El
+aviso pasa a `PAMBMASTER` sin anunciar una copia. El paso de `PAMB` a
+`PEXTRA` tampoco anuncia que se haya eliminado la pendiente extra.
 
 Los avisos de espera usan `AlertOnce` y `COUNT|canal` usa `AlertOnChange`:
 ninguno repite recordatorio por ciclo, que sería ruido, pero el del descuadre

@@ -13,11 +13,11 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   pendientes, detección de faltantes y borrado por pareja de tickets en MT5.
 - [ambiguous_matching.md](ambiguous_matching.md): desempate por valores cuando
   dos posiciones o pendientes gemelas son indistinguibles en el snapshot y
-  unicidad del enlace en ambos sentidos.
+  unicidad del enlace en ambos sentidos, también al revalidar creaciones MT5.
 - [copiix_log_matching.md](copiix_log_matching.md): diagnóstico opcional de
   posiciones ambiguas con Journals y logs de Experts de Copiix en MT5.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
-  identificadores de cuenta y datos operativos exigidos en cada aviso.
+  identificadores de cuenta, datos operativos y avisos de creación desactivada.
 - [alert_lifecycle.md](alert_lifecycle.md): una clave por problema, quién envía
   el `RESUELTO` y cómo se cierran los avisos de un ticket que ya no existe.
 - [automatic_corrections.md](automatic_corrections.md): alcance autorizado,

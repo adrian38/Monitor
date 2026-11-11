@@ -29,6 +29,10 @@ operación del Slave hacía leer el aviso como si la copia existiera. Una STOP L
 usa internamente pero no se muestra. Los valores cero aparecen como `SIN SL` o
 `SIN TP`.
 
+En MT5, el aviso de copia pendiente faltante adapta el bloque `ACCIÓN` a
+`InpAutoCreateMissingPending`. Si está desactivado, el texto indica que el
+aviso es informativo y que la creación automática está desactivada.
+
 Cuando varias copias son indistinguibles, el aviso explica que no existe una
 identidad suficiente, pide revisión manual y confirma que no se enlaza ni se
 corrige ninguna automáticamente. Ver [ambiguous_matching.md](ambiguous_matching.md).
