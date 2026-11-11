@@ -10,11 +10,11 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 - `CopyMonitor_Master_MT5_v1_17_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_33_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_34_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_09_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  `CopyMonitor_Slave_MT4_v1_10_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -191,6 +191,13 @@ La comprobación estática del repositorio no abre MetaTrader:
 
 ```powershell
 python -m tools.verify_project
+```
+
+Las pruebas unitarias de los ayudantes Python y de las reglas de borrado de
+pendientes MT5 tampoco abren MetaTrader:
+
+```powershell
+python -m unittest discover -s tools -p "test_*.py"
 ```
 
 Para una entrega, compila además los dos EAs MQL5 con MetaEditor de MT5 y los

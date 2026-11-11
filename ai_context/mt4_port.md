@@ -1,7 +1,8 @@
 # Port MT4 de Master y Slave
 
-`CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_09_MULTI.mq4`
-son la traducción a MQL4 del Master MT5 v1.17 y del Slave MT5 v1.30. Conservan
+`CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y `CopyMonitor_Slave_MT4_v1_10_MULTI.mq4`
+son la traducción a MQL4 del Master MT5 v1.17 y del Slave MT5 v1.30, con el
+borrado por pareja de tickets de la v1.34 del Slave MT5. Conservan
 el esquema de snapshot, el emparejamiento, los mensajes de Telegram y los
 límites de automatización. Lo que cambia es la API del terminal, no el
 contrato. Las decisiones de protocolo siguen en
@@ -35,7 +36,8 @@ porque un ticket de MT5 no cabe en el `int` de `OrderTicket()`. Se escriben con
 La pareja MT4 implementa también todo lo que el Slave MT5 añadió:
 estado de conexión e identidad de sesión del Master, aviso obligatorio de la
 ausencia sostenida, vigilancia del propio terminal, cuenta Master esperada,
-avisos de volumen distinto, confirmación del Master vacío antes de borrar,
+avisos de volumen distinto, vínculo observado por pareja de tickets antes de
+borrar,
 cortacircuitos de acciones automáticas, guarda de escala de precios, nivel de
 margen, latido, respaldo push, testigo de instancia y tolerancias por símbolo.
 Lo único que no viaja al port es lo que MQL4 no expone.
@@ -68,6 +70,10 @@ Lo único que no viaja al port es lo que MQL4 no expone.
   `false` con el error 1: es el `TRADE_RETCODE_NO_CHANGES` de MT5 y cuenta como
   éxito. No hay modo de llenado, así que desaparece el reintento con
   `ORDER_FILLING_RETURN`.
+- **`ArrayRemove`.** No existe en MQL4, así que la lista de vínculos del canal
+  cierra sus propios huecos con `RemovePendingLink`: desplaza a mano y reduce
+  el tamaño. Lo demás del borrado por pareja de tickets es el mismo código que
+  el Slave MT5, cuerpo por cuerpo, y una prueba lo comprueba.
 - **`TimeTradeServer`.** Las sesiones se consultan contra `TimeCurrent()`, la
   hora del servidor en la última cotización.
 - **Modos de trading del símbolo.** MT4 sólo expone si el símbolo admite
@@ -110,7 +116,7 @@ Para compilar, el MetaEditor de MT4 acepta un fuente fuera del directorio de
 datos y no hace falta `/inc` porque ninguno de los dos usa includes:
 
 ```
-metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_09_MULTI.mq4" /log:"<log>"
+metaeditor.exe /compile:"<ruta>\CopyMonitor_Slave_MT4_v1_10_MULTI.mq4" /log:"<log>"
 ```
 
 El código de salida no distingue el éxito: hay que leer la línea `Result:` del

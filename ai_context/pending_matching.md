@@ -90,22 +90,52 @@ de las dos pasadas encontró la candidata. `CheckOpen` deja las posiciones no em
 para que `CheckPending` las consulte; por eso el orden de las dos llamadas en
 `ProcessOwner` importa. Ver [alert_lifecycle.md](alert_lifecycle.md).
 
-## Borrado por pareja de tickets en MT5
+## Borrado por pareja de tickets
 
-Desde la v1.31 el Slave recuerda en memoria las parejas que el matching
-identifica con el volumen esperado y una sola candidata por lado, incluso si
-se ignora el volumen al buscar posibles competidoras. Un ticket Master
+El Slave recuerda en memoria las parejas identificadas con el volumen
+esperado. Si hay otras candidatas del mismo símbolo equivalente
+y tipo, los valores comparados deben distinguir la pareja en ambos sentidos.
+Para detectar ambigüedad se tienen en cuenta todas las candidatas, aunque
+tengan otro volumen o ya estén asignadas por el matching. Un ticket Master
 ignorado no puede autorizar un borrado. Si la pareja se vuelve ambigua o el
 Slave queda protegido por otro emparejamiento, se descarta el vínculo.
 
 Cuando desaparece el ticket Master, se confirma su ausencia durante
 `InpEmptyMasterConfirmSeconds` y después se exige que la copia siga sobrando
 durante `InpExtraPendingConfirmSeconds`. Una pendiente de AUDCAD no bloquea
-una baja de XAUUSD. Otra pendiente del símbolo equivalente y del mismo tipo
-puede explicar la copia y bloquea el borrado, incluso con un volumen distinto.
+una baja de XAUUSD. Una pendiente Master del mismo símbolo equivalente y tipo
+bloquea el borrado salvo que tenga su propia copia viva identificada
+inequívocamente. Este criterio también se comprueba con las órdenes Slave
+actuales justo antes de enviar la cancelación.
 Sin vínculo previo se emite `PAMB`. Por eso una copia que ya estaba huérfana
 al instalar la versión necesita revisión manual. Una pérdida de confianza o un
 reinicio descarta los vínculos y los contadores.
+
+De la v1.31 a la v1.33 la unicidad se decidía sólo por símbolo equivalente y
+tipo: cualquier otra candidata de cualquiera de los dos lados descartaba la
+pareja aunque los precios la distinguieran. Con dos copias del mismo símbolo y
+tipo no quedaba ningún vínculo, así que la ausencia del ticket Master no se
+confirmaba nunca y el único mensaje posible era `PAMB`. El caso de AUDUSD del
+11-11-2026 lo muestra: dos `sell limit` de 0.01 a 0.69256 y 0.68962, separadas
+294 puntos frente a los 100 de `InpPendingPriceTolerancePoints`.
+
+El criterio sigue siendo conservador a propósito. Una pendiente Master
+alternativa cuya copia ya se activó y es posición no tiene copia pendiente
+viva, así que bloquea el borrado y la copia sobrante sólo se avisa. Borrar es
+la única acción destructiva del EA: bloquear de más cuesta un aviso y una
+revisión manual, borrar de menos cuesta una copia legítima.
+
+La regla es de las dos plataformas. El Slave MT5 la estrenó en la v1.31 y la
+corrigió en la v1.34; el port MT4 la adoptó en su v1.10, donde sustituye a una
+puerta mucho más tosca: hasta la v1.09 sólo borraba una pendiente huérfana
+cuando el snapshot Master no tenía ninguna pendiente, de modo que un Master con
+otra pendiente cualquiera —de otro símbolo incluso— bloqueaba el borrado para
+siempre.
+
+`tools/test_pending_delete_rules.py` transcribe estas dos reglas y las ejecuta
+contra ese caso real, contra pendientes gemelas indistinguibles y contra la
+regla anterior, y comprueba que el cuerpo de las funciones es el mismo en los
+dos EAs.
 
 Justo antes del borrado se vuelve a seleccionar el ticket Slave y se
 comprueban tipo pendiente, filtro de símbolo y ownership por comentario.

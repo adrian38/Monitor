@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_33_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_34_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT4_v1_03_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_09_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_10_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -368,10 +368,15 @@ BLIND_SPOT_TOKENS = (
     # profile any more.
     "InpAlertExtraPositions",
     "AlertExtraPositions(",
-    # The only destructive action requires a continuously trusted snapshot
-    # and a confirmation period.
+    # The only destructive action requires a continuously trusted snapshot,
+    # a link proven against the published values and a confirmation period.
+    # Both platforms decide it with the same two rules.
     "TrackChannelSnapshot(",
     "InpEmptyMasterConfirmSeconds",
+    "RefreshPendingLinks(",
+    "UniquePendingDeletePair(",
+    "PendingDeleteBlock(",
+    "MasterStillAbsentBeforeDelete(",
     # A copier and a monitor undoing each other must not ping-pong forever.
     "AutoActionAllowed(",
     "RegisterAutoAction(",
@@ -914,9 +919,6 @@ def main() -> int:
             "SYMBOL_TRADE_FREEZE_LEVEL",
             "PositionNotFrozen(",
             "SymbolIsSynchronized(",
-            "RefreshPendingLinks(",
-            "UniquePendingDeletePair(",
-            "MasterStillAbsentBeforeDelete(",
             "AssignPendingByValues(",
             "ReconcilePendingCreation(",
         ),
@@ -942,8 +944,8 @@ def main() -> int:
     check_blind_spots(
         "slave mt4",
         mt4["slave"],
-        ("IsConnected()", "MasterEmptyConfirmed(", "MasterStillEmptyBeforeDelete(",
-         "FindUniqueOwnedPending("),
+        # MQL4 has no ArrayRemove, so the link list closes its own gaps.
+        ("IsConnected()", "RemovePendingLink(", "FindUniqueOwnedPending("),
         failures,
     )
     check_tunables(mt4, failures)
