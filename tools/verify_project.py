@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_34_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_36_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
@@ -536,6 +536,19 @@ def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
     )
 
     if name == "slave":
+        option = "InpSuppressCountAlertForIgnoredSlaveSymbols"
+        require(
+            bool(re.search(rf"^input bool\s+{option}\s*=\s*false;", slave, re.MULTILINE)),
+            f"{name}: COUNT suppression must be opt-in",
+            failures,
+        )
+        require(
+            f"if(OwnerCommentMatch(o,comment)) {{ if({option} && "
+            "SymbolListContains(g_exclude_symbols,symbol)) return; "
+            "if(!SlaveSymbolAllowed(symbol)) filtered++; return; }" in hidden_body,
+            f"{name}: COUNT suppression must only cover owned, explicitly excluded symbols",
+            failures,
+        )
         require(
             "FILE_SHARE_READ|FILE_SHARE_WRITE" in function_body(
                 slave, "ReadCopiixPositionLinks"

@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_34_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_36_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.34"
-#property description "CopyMonitor Slave MT5 v1.34 MULTI"
+#property version "1.36"
+#property description "CopyMonitor Slave MT5 v1.36 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -84,6 +84,8 @@ input string InpIgnoreSlaveComments                   = "";
 // Accepts comma or semicolon separated symbols.
 input string InpSlaveSymbolsFilter                    = "";
 input string InpSlaveSymbolsIgnore                    = "";
+// Only suppresses COUNT for owned Slave operations explicitly excluded above.
+input bool InpSuppressCountAlertForIgnoredSlaveSymbols = false;
 
 input group "===== SYMBOL EQUIVALENCE ====="
 // CHANNEL,MASTER_SYMBOL,SLAVE_SYMBOL;...
@@ -5054,7 +5056,7 @@ bool AnyOwnerMatches(const string comment,const Owner &except)
 }
 // Una operacion de otro canal configurado esta explicada y no cuenta. Solo
 // cuentan la que no pertenece a ningun canal conocido y la que es de este
-// canal pero con el simbolo fuera del filtro.
+// canal con el simbolo fuera del filtro, salvo exclusion explicita aceptada.
 void ClassifyHidden(const Owner &o,const string symbol,const string comment,
                     int &filtered,int &unknown)
 {
@@ -5064,6 +5066,9 @@ void ClassifyHidden(const Owner &o,const string symbol,const string comment,
    if(SlaveCommentIgnored(comment)) return;
    if(OwnerCommentMatch(o,comment))
    {
+      if(InpSuppressCountAlertForIgnoredSlaveSymbols &&
+         SymbolListContains(g_exclude_symbols,symbol))
+         return;
       if(!SlaveSymbolAllowed(symbol)) filtered++;
       return;
    }
@@ -5076,9 +5081,10 @@ bool MasterReachable(const Owner &o,const string master_symbol)
 {
    return SlaveSymbolAllowed(ExpectedSlaveSymbol(o.channel,master_symbol));
 }
-string CountLine(const string label,const int value)
+string CountDetail(const string label,const int value)
 {
-   return "\n"+label+": "+IntegerToString(value);
+   if(value==0) return "";
+   return "\n- "+label+": "+IntegerToString(value);
 }
 void CheckCounts(const Owner &o,const Snap &snap)
 {
@@ -5147,33 +5153,37 @@ void CheckCounts(const Owner &o,const Snap &snap)
    {
       ResolveAlert(key,
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-         "\n\nPROBLEMA RESUELTO:\nLas cantidades de Master y Slave vuelven a explicarse por completo.");
+         "\n\nRESUMEN DEL CANAL\nYa no se detectan exclusiones ni diferencias que requieran este aviso.");
       return;
    }
 
    // Sin recordatorio por ciclo, que seria ruido, pero con reenvio cuando
    // los numeros cambian: el panorama de un descuadre no es el mismo aviso.
+   int comparable_master_pos=ArraySize(snap.pos)-master_pos_ignored-master_pos_unreachable;
+   int comparable_master_ord=ArraySize(snap.ord)-master_ord_ignored-master_ord_unreachable;
+   int visible_slave_pos=ArraySize(sp);
+   int visible_slave_ord=ArraySize(so);
+   string count_note="";
+   if(comparable_master_pos==visible_slave_pos && comparable_master_ord==visible_slave_ord)
+      count_note="\nLos recuentos coinciden. El emparejamiento por operación se comprueba por separado.";
+
    AlertOnChange(key,signature,
       AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
-      "\n\nPROBLEMA:\nLas cantidades de Master y Slave no cuadran por motivos que no generan aviso propio.\n"+
-      CountLine("Posiciones Master",ArraySize(snap.pos))+
-      CountLine("  con ticket ignorado",master_pos_ignored)+
-      CountLine("  con símbolo Slave filtrado",master_pos_unreachable)+
-      CountLine("Posiciones Slave visibles para este canal",ArraySize(sp))+
-      CountLine("  de este canal ocultas por el filtro de símbolos",filtered_pos)+
-      CountLine("  sin pareja Master y sin aviso propio",silent_extra_pos)+
-      CountLine("Posiciones Slave de ningún canal configurado",unknown_pos)+
-      "\n"+
-      CountLine("Órdenes pendientes Master",ArraySize(snap.ord))+
-      CountLine("  con ticket ignorado",master_ord_ignored)+
-      CountLine("  con símbolo Slave filtrado",master_ord_unreachable)+
-      CountLine("Pendientes Slave visibles para este canal",ArraySize(so))+
-      CountLine("  de este canal ocultas por el filtro de símbolos",filtered_ord)+
-      CountLine("Pendientes Slave de ningún canal configurado",unknown_ord)+
-      "\n\nACCIÓN:\nEsas operaciones quedan fuera de la comparación: CopyMonitor no las"+
-      " empareja ni avisa de ellas una a una."+
-      "\nRevisar el filtro de símbolos, los comentarios de propiedad y la cuenta Slave "+
-      AccountText((long)AccountInfoInteger(ACCOUNT_LOGIN))+".");
+      "\n\nMOTIVOS DEL AVISO"+
+      CountDetail("Pendientes Slave del canal excluidas por el filtro de símbolos",filtered_ord)+
+      CountDetail("Posiciones Slave del canal excluidas por el filtro de símbolos",filtered_pos)+
+      CountDetail("Pendientes Slave sin canal asignado",unknown_ord)+
+      CountDetail("Posiciones Slave sin canal asignado",unknown_pos)+
+      CountDetail("Pendientes Master cuyo símbolo Slave está filtrado",master_ord_unreachable)+
+      CountDetail("Posiciones Master cuyo símbolo Slave está filtrado",master_pos_unreachable)+
+      CountDetail("Posiciones Slave sin pareja Master y sin aviso individual",silent_extra_pos)+
+      "\n\nRECUENTOS DENTRO DEL FILTRO (MASTER / SLAVE)"+
+      "\nPendientes: "+IntegerToString(comparable_master_ord)+" / "+IntegerToString(visible_slave_ord)+
+      "\nPosiciones: "+IntegerToString(comparable_master_pos)+" / "+IntegerToString(visible_slave_pos)+
+      count_note+
+      CountDetail("Pendientes Master omitidas por ticket ignorado",master_ord_ignored)+
+      CountDetail("Posiciones Master omitidas por ticket ignorado",master_pos_ignored)+
+      "\n\nACCIÓN\nRevisa las exclusiones o diferencias indicadas si afectan a operaciones que este canal debe vigilar.");
 }
 
 //---------------- panel/cycle ----------------
@@ -5470,7 +5480,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.34 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.36 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5526,7 +5536,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.34 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.36 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";

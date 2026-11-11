@@ -11,9 +11,15 @@ terminal Slave. `InpPortfolioAlias` es obligatorio: el EA no arranca sin él.
 `InpSlaveID`, canal, owner, nick y perfil son datos internos y no se muestran
 en Telegram.
 
-Después de los IDs, el mensaje contiene uno o más bloques `PROBLEMA` y termina
-con `ACCIÓN`. No se incluye un resumen de contadores que obligue al usuario a
-buscar después los datos operativos.
+Los avisos por operación contienen uno o más bloques `PROBLEMA` después de los
+IDs y terminan con `ACCIÓN`.
+
+En MT5, el aviso agregado `COUNT` muestra primero los motivos que lo activaron
+y omite el detalle con valor cero. Después compara los recuentos visibles del
+Slave con los del Master cuyos tickets y símbolos entran en la comparación.
+Los tickets Master ignorados se indican aparte cuando los hay. Si los recuentos
+coinciden, el mensaje lo indica y recuerda que el emparejamiento por operación
+se comprueba por separado. Ver [protocol_and_safety.md](protocol_and_safety.md).
 
 Cada operación indica `Estado` (`POSICIÓN ACTIVA` u `ORDEN PENDIENTE`), tipo en
 texto, símbolo y tickets disponibles. Una diferencia de SL y TP se agrupa en el

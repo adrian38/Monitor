@@ -7,7 +7,7 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   transporte por snapshot y flujo de ejecución.
 - [protocol_and_safety.md](protocol_and_safety.md): contrato del archivo
   compartido, identidad de sesión, ownership, matching y límites de
-  automatización.
+  automatización y exclusiones explícitas en el aviso `COUNT`.
 - [development.md](development.md): flujo de edición, versionado y verificación.
 - [pending_matching.md](pending_matching.md): emparejamiento uno a uno de
   pendientes, detección de faltantes y borrado por pareja de tickets en las dos
@@ -19,7 +19,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
 - [copiix_log_matching.md](copiix_log_matching.md): diagnóstico opcional de
   posiciones ambiguas con Journals y logs de Experts de Copiix en MT5.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
-  identificadores de cuenta, datos operativos y avisos de creación desactivada.
+  identificadores de cuenta, datos operativos, alerta de recuentos y avisos de
+  creación desactivada.
 - [alert_lifecycle.md](alert_lifecycle.md): una clave por problema, quién envía
   el `RESUELTO` y cómo se cierran los avisos de un ticket que ya no existe.
 - [automatic_corrections.md](automatic_corrections.md): alcance autorizado,

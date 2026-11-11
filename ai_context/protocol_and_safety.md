@@ -117,6 +117,15 @@ eso es lo normal. Cuentan como **inexplicadas**:
 - la posición Slave sin pareja Master en los perfiles que no avisan de
   posiciones extra, es decir todos menos `PORTFOLIO46`.
 
+En el Slave MT5, `InpSuppressCountAlertForIgnoredSlaveSymbols` permite que cada
+instancia considere esperadas las exclusiones de `InpSlaveSymbolsIgnore` en
+`COUNT`. Su valor predeterminado es `false`. Con `true`, una posición o
+pendiente Slave que el canal reconoce como propia deja de sumar al aviso si
+su símbolo figura explícitamente en esa lista. Siguen contando los símbolos
+Slave que quedan fuera solo por faltar en la lista de inclusión, las
+operaciones sin canal conocido y los símbolos Master sin equivalente Slave
+permitido. El ajuste se usa solo al calcular `COUNT`.
+
 El aviso es `AlertOnChange`: no repite recordatorio por ciclo, pero se reenvía
 cada vez que alguna de las cifras cambia, con el recuento de ambos lados y el
 motivo de cada diferencia, y cierra con `RESUELTO` cuando todo vuelve a
