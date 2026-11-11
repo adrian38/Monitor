@@ -35,13 +35,14 @@ Al volver la conexión tampoco se confía en la primera foto cacheada. Tanto el
 enlace Slave como cada canal Master deben permanecer sanos durante
 `InpLinkRecoverySeconds` antes de reanudar comparación o correcciones. Cualquier
 snapshot ausente, parcial, obsoleto, cruzado, de otra cuenta o desconectado
-reinicia esa confianza y también la confirmación continua de Master vacío.
+reinicia esa confianza y las confirmaciones para borrar pendientes.
 
 La v1.27/v1.07 añade la identidad de sesión del esquema 5. Comparar sólo
 `written` detectaba un salto de reloj hacia atrás, pero no un reinicio normal:
 la hora seguía creciendo y la confirmación previa podía sobrevivir al nuevo
-Master. Cada `OnInit` publica un ID nuevo; el cambio invalida la confianza y la
-confirmación de vacío. Los esquemas anteriores se siguen leyendo para
+Master. Cada `OnInit` publica un ID nuevo; el cambio invalida la confianza y
+las confirmaciones. En MT5 también se descartan los vínculos de pendientes
+observados. Los esquemas anteriores se siguen leyendo para
 monitorización, pero no autorizan ninguna acción automática.
 
 En los tres casos se suspende en lugar de seguir comparando: actuar sobre datos
@@ -229,7 +230,8 @@ compatible o el ticket Master desaparece.
 La misma versión cierra la carrera entre comprobar y actuar. Justo antes de
 modificar se confirma que la posición u orden Master no cambió; antes de crear
 se hace lo mismo y se busca otra vez una copia propia compatible; antes de
-borrar se demuestra de nuevo que el Master sigue vacío. Todas las rutas exigen
+borrar se comprueba otra vez la ausencia de la orden vinculada en MT5 o el
+canal vacío en MT4. Todas las rutas exigen
 snapshot de esquema 5, misma cuenta y sesión, enlace sano y ventana de
 recuperación. Si algo cambia, se bloquea esa acción y el ciclo siguiente
 reconstruye el diagnóstico.

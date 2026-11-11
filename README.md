@@ -10,7 +10,7 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 - `CopyMonitor_Master_MT5_v1_17_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_30_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_31_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y
@@ -113,10 +113,11 @@ depende del perfil.
 
 ## Límites de la automatización
 
-- El borrado de una pendiente extra exige además que el snapshot del Master
-  lleve `InpEmptyMasterConfirmSeconds` seguidos sin ninguna pendiente. Un
-  Master recién reconfigurado publica el mismo cero que un Master vacío de
-  verdad, y la confirmación anterior de dos segundos no daba tiempo a nadie.
+- En MT5 el borrado requiere que el Slave haya observado una pareja inequívoca
+  de tickets y que su pendiente Master lleve `InpEmptyMasterConfirmSeconds`
+  ausente. Después se aplica `InpExtraPendingConfirmSeconds`. Una pendiente
+  Master de otro símbolo no retrasa el borrado. En MT4 la primera confirmación
+  sigue siendo por canal vacío.
 - `InpMaxAutoActionsPerHour` corta el ping-pong si la copiadora deshace lo que
   el monitor hace.
 - `InpMaxPriceDeviationPercent` bloquea cuando el precio del Master no encaja

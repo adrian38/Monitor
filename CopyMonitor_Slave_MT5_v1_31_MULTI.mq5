@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_30_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_31_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.30"
-#property description "CopyMonitor Slave MT5 v1.30 MULTI"
+#property version "1.31"
+#property description "CopyMonitor Slave MT5 v1.31 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -129,11 +129,8 @@ input bool InpAutoDeleteExtraPending                  = true;
 // Sube de 2 a 10 segundos en la v1.25. El borrado es la unica accion
 // destructiva del EA y dos segundos no dan tiempo a nadie a intervenir.
 input int  InpExtraPendingConfirmSeconds              = 10;
-// Tiempo que el snapshot del Master debe llevar seguido sin ninguna pendiente
-// antes de que una pendiente Slave huerfana pueda borrarse. La condicion
-// "el Master no tiene pendientes" la cumple tambien un Master recien
-// reconfigurado -otro filtro de simbolos, otro comentario, otra cuenta con el
-// mismo canal-, que publica un snapshot valido y fresco con cero pendientes.
+// Tiempo sin el ticket Master enlazado ni otra pendiente que pueda explicar
+// esa copia. Se conserva el nombre del parámetro para reutilizar los presets.
 input int  InpEmptyMasterConfirmSeconds               = 30;
 input int  InpPendingPriceTolerancePoints             = 100;
 // Tope de acciones automaticas por hora y canal. Si la copiadora y el monitor
@@ -253,6 +250,11 @@ struct SymbolMapRec { string channel,master_symbol,slave_symbol; };
 struct IgnoreRec { string channel; ulong ticket; bool scoped; };
 // Tolerancias propias de un simbolo. Lo que no se declara usa el valor global.
 struct SymbolTolRec { string symbol; int entry,sltp,pending; };
+struct PendingLink
+{
+   ulong master,slave;
+   datetime absent_since;
+};
 // Estado vivo de un canal entre ciclos. No se persiste: tras un reinicio toda
 // cuenta atras vuelve a empezar, que es el comportamiento prudente.
 struct ChannelState
@@ -264,9 +266,8 @@ struct ChannelState
    datetime unfresh_since;
    // Desde cuando todos los requisitos de confianza vuelven a cumplirse.
    datetime trusted_since;
-   // Confirmacion de Master vacio y ultima identidad de la fuente. Schema 5
-   // detecta reinicios por session; written queda como fallback antiguo.
-   datetime empty_ord_since;
+   // Vínculos demostrados durante la sesión y el enlace de confianza actuales.
+   PendingLink pending_links[];
    long     last_written;
    string   last_session;
    // Ventana del cortacircuitos de acciones automaticas.
@@ -953,7 +954,7 @@ void BuildChannelState()
       g_channel_state[i].offline_since=0;
       g_channel_state[i].unfresh_since=0;
       g_channel_state[i].trusted_since=0;
-      g_channel_state[i].empty_ord_since=0;
+      ArrayFree(g_channel_state[i].pending_links);
       g_channel_state[i].last_written=0;
       g_channel_state[i].last_session="";
       g_channel_state[i].actions_since=0;
@@ -2243,7 +2244,7 @@ void InvalidateChannelTrust(const string channel)
    int i=ChannelStateIndex(channel);
    if(i<0) return;
    g_channel_state[i].trusted_since=0;
-   g_channel_state[i].empty_ord_since=0;
+   ArrayFree(g_channel_state[i].pending_links);
    g_channel_state[i].last_written=0;
    g_channel_state[i].last_session="";
 }
@@ -2252,10 +2253,7 @@ void InvalidateAllChannelTrust()
 {
    for(int i=0;i<ArraySize(g_channel_state);i++)
    {
-      g_channel_state[i].trusted_since=0;
-      g_channel_state[i].empty_ord_since=0;
-      g_channel_state[i].last_written=0;
-      g_channel_state[i].last_session="";
+      InvalidateChannelTrust(g_channel_state[i].channel);
    }
 }
 
@@ -2310,11 +2308,7 @@ bool ReadTrustedSnapshotNow(const Owner &o,Snap &latest,string &reason)
       return false;
    }
 
-   bool session_changed=(latest.session!="" && g_channel_state[ci].last_session!="" &&
-                         latest.session!=g_channel_state[ci].last_session);
-   bool legacy_restarted=(latest.session=="" &&
-                          latest.written<g_channel_state[ci].last_written);
-   if(session_changed || legacy_restarted)
+   if(latest.session!=g_channel_state[ci].last_session)
    {
       InvalidateChannelTrust(o.channel);
       reason="El Master se reinició; debe recuperar de nuevo la ventana de confianza.";
@@ -2359,67 +2353,22 @@ bool CurrentMasterPosition(const Owner &o,const ulong ticket,PosRec &position,st
    return false;
 }
 
-bool MasterStillEmptyBeforeDelete(const Owner &o,string &reason)
-{
-   Snap latest;
-   if(!ReadTrustedSnapshotNow(o,latest,reason)) return false;
-   TrackChannelSnapshot(o.channel,latest);
-   if(ArraySize(latest.ord)>0)
-   {
-      reason="El Master volvió a tener pendientes antes del borrado.";
-      return false;
-   }
-   if(!MasterEmptyConfirmed(o.channel))
-   {
-      reason="El cero de pendientes dejó de estar confirmado antes del borrado.";
-      return false;
-   }
-   return true;
-}
 // Refresca el estado del canal con el snapshot recien leido. Schema 5 cambia
 // session en cada arranque; written hacia atras queda como fallback de lectura
-// para Masters antiguos. Cualquier reinicio invalida la confirmacion de vacio.
+// para Masters antiguos. Un cambio de fuente invalida los vínculos observados.
 void TrackChannelSnapshot(const string channel,const Snap &snap)
 {
    int i=ChannelStateIndex(channel);
    if(i<0) return;
 
-   datetime now=TimeLocal();
-   bool has_session=(snap.session!="");
-   bool restarted=(has_session && g_channel_state[i].last_session!="" &&
-                   snap.session!=g_channel_state[i].last_session) ||
-                  (!has_session && snap.written<g_channel_state[i].last_written);
+   bool restarted=(snap.session!=g_channel_state[i].last_session) ||
+                  (snap.session=="" && snap.written<g_channel_state[i].last_written);
+   if(restarted)
+      InvalidateChannelTrust(channel);
 
    g_channel_state[i].last_written=snap.written;
    g_channel_state[i].last_session=snap.session;
 
-   if(restarted || ArraySize(snap.ord)>0)
-   {
-      g_channel_state[i].empty_ord_since=0;
-      return;
-   }
-   if(g_channel_state[i].empty_ord_since==0)
-      g_channel_state[i].empty_ord_since=now;
-}
-// Un snapshot sin pendientes solo autoriza el borrado cuando lleva asi el
-// tiempo configurado. Es la unica guarda de la unica accion destructiva.
-bool MasterEmptyConfirmed(const string channel)
-{
-   int i=ChannelStateIndex(channel);
-   if(i<0) return false;
-   if(g_channel_state[i].empty_ord_since==0) return false;
-
-   return (TimeLocal()-g_channel_state[i].empty_ord_since)>=InpEmptyMasterConfirmSeconds;
-}
-int MasterEmptyPendingSeconds(const string channel)
-{
-   int i=ChannelStateIndex(channel);
-   if(i<0 || g_channel_state[i].empty_ord_since==0)
-      return InpEmptyMasterConfirmSeconds;
-
-   int elapsed=(int)(TimeLocal()-g_channel_state[i].empty_ord_since);
-   int left=InpEmptyMasterConfirmSeconds-elapsed;
-   return left>0 ? left : 0;
 }
 bool SymbolAcceptsNewOrders(const string symbol,const int type,string &reason)
 {
@@ -3708,6 +3657,86 @@ bool OrdSlaveIdentifiesMaster(const Owner &o,const Snap &snap,const int current,
    }
    return compatible<=1 || (current_agrees && agreeing==1);
 }
+int PendingOrderIndex(const OrdRec &orders[],const ulong ticket)
+{
+   for(int i=0;i<ArraySize(orders);i++)
+      if(orders[i].ticket==ticket)
+         return i;
+   return -1;
+}
+int PendingLinkIndex(const PendingLink &links[],const ulong slave_ticket)
+{
+   for(int i=0;i<ArraySize(links);i++)
+      if(links[i].slave==slave_ticket)
+         return i;
+   return -1;
+}
+// Para habilitar un borrado posterior, el vínculo debe seguir siendo único
+// aun si el copiador usa un volumen distinto en alguna de las órdenes.
+bool UniquePendingDeletePair(const Owner &o,const OrdRec &master[],const int m,
+                             const OrdRec &slave[],const int s)
+{
+   if(!OrdCompatible(o,master[m],slave[s]))
+      return false;
+   for(int i=0;i<ArraySize(master);i++)
+      if(i!=m && OrdCompatibleIgnoringVolume(o,master[i],slave[s]))
+         return false;
+   for(int i=0;i<ArraySize(slave);i++)
+      if(i!=s && OrdCompatibleIgnoringVolume(o,master[m],slave[i]))
+         return false;
+   return true;
+}
+void RefreshPendingLinks(const Owner &o,const Snap &snap,const OrdRec &so[],
+                         const int &assign[],const bool &protected_slave[],
+                         const bool &ambiguous_slave[],PendingLink &links[])
+{
+   for(int i=ArraySize(links)-1;i>=0;i--)
+   {
+      int s=PendingOrderIndex(so,links[i].slave);
+      int m=PendingOrderIndex(snap.ord,links[i].master);
+      if(s<0 || ambiguous_slave[s] || (m<0 && protected_slave[s]) ||
+         (m>=0 && (assign[m]!=s || !UniquePendingDeletePair(o,snap.ord,m,so,s))))
+         ArrayRemove(links,i,1);
+      else if(m>=0)
+         links[i].absent_since=0;
+   }
+   for(int m=0;m<ArraySize(assign);m++)
+   {
+      int s=assign[m];
+      if(s<0 || ambiguous_slave[s] || MasterTicketIgnored(o.channel,snap.ord[m].ticket) ||
+         PendingLinkIndex(links,so[s].ticket)>=0 ||
+         !UniquePendingDeletePair(o,snap.ord,m,so,s))
+         continue;
+
+      int i=ArraySize(links);
+      if(ArrayResize(links,i+1)!=i+1)
+         return;
+      links[i].master=snap.ord[m].ticket;
+      links[i].slave=so[s].ticket;
+      links[i].absent_since=0;
+   }
+}
+string PendingDeleteBlock(const Owner &o,const Snap &snap,const ulong master_ticket,
+                          const OrdRec &slave)
+{
+   if(PendingOrderIndex(snap.ord,master_ticket)>=0)
+      return "El ticket Master vinculado sigue pendiente.";
+
+   for(int i=0;i<ArraySize(snap.ord);i++)
+      if(OrdCompatibleIgnoringVolume(o,snap.ord[i],slave))
+         return "Otra pendiente Master del mismo símbolo equivalente y tipo podría corresponder a esta copia.";
+   return "";
+}
+bool MasterStillAbsentBeforeDelete(const Owner &o,const PendingLink &link,
+                                   const OrdRec &slave,string &reason)
+{
+   Snap latest;
+   if(!ReadTrustedSnapshotNow(o,latest,reason))
+      return false;
+   TrackChannelSnapshot(o.channel,latest);
+   reason=PendingDeleteBlock(o,latest,link.master,slave);
+   return reason=="";
+}
 int CandIndex(const string key)
 {
    for(int i=0;i<ArraySize(g_candidates);i++)if(g_candidates[i].key==key)return i;
@@ -4803,73 +4832,67 @@ void CheckPending(const Owner &o,const Snap &snap)
       ClearAlert("PMISS|"+o.channel);
    }
 
+   int ci=ChannelStateIndex(o.channel);
+   if(ci<0 || g_channel_state[ci].last_session!=snap.session ||
+      g_channel_state[ci].trusted_since==0)
+      return;
+   if(snap.session!="")
+      RefreshPendingLinks(o,snap,so,assign,slave_protected,ambiguous_slave,
+                          g_channel_state[ci].pending_links);
+
    // Extra Slave pending cleanup.
    for(int s=0;s<ArraySize(so);s++)
    {
       if(slave_protected[s] || ambiguous_slave[s])
          continue;
 
-      // Conservative deletion rule:
-      // if ANY Master pending exists (including ignored tickets), deletion
-      // is blocked because the unmatched Slave pending could belong to one
-      // of those Master orders if symbol/price mapping is imperfect.
-      bool master_has_pendings=(ArraySize(snap.ord)>0);
-      // Y aunque no tenga ninguna, hace falta que lleve un rato sin tenerlas:
-      // un Master recien reconfigurado publica un snapshot valido y fresco
-      // con cero pendientes, y dos segundos despues del ALERTA el Slave
-      // borraba pendientes reales sin que nadie pudiera intervenir.
-      bool empty_confirmed=MasterEmptyConfirmed(o.channel);
-      bool safe_orphan=(!master_has_pendings && empty_confirmed);
-
-      if(master_has_pendings)
+      string ticket=StringFormat("%I64u",so[s].ticket);
+      string delete_problem="DELETE|"+o.channel+"|"+ticket;
+      string ambiguous_key="PAMB|"+o.channel+"|"+ticket;
+      int li=PendingLinkIndex(g_channel_state[ci].pending_links,so[s].ticket);
+      string blocked="La copia necesita un vínculo inequívoco observado con su pendiente Master.";
+      string master_detail="";
+      if(li>=0)
       {
-         string msg=AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+
-            "\n\nPROBLEMA:\nExiste una orden pendiente en el Slave que no se puede emparejar.\n\n"+
-            SlavePendingDetails(so[s])+
-            "\n\nACCIÓN:\nRevisar las órdenes pendientes de ambas cuentas."+
-            "\nEl borrado automático está bloqueado mientras el Master tenga pendientes.";
-
-         PersistAlert(
-            "PAMB|"+o.channel+"|"+
-            StringFormat("%I64u",so[s].ticket),
-            msg);
-
-         continue;
+         ulong master_ticket=g_channel_state[ci].pending_links[li].master;
+         master_detail="\nTicket Master vinculado: "+StringFormat("%I64u",master_ticket);
+         blocked=PendingDeleteBlock(o,snap,master_ticket,so[s]);
+         if(blocked!="")
+            g_channel_state[ci].pending_links[li].absent_since=0;
+         else
+         {
+            datetime now=TimeLocal();
+            if(g_channel_state[ci].pending_links[li].absent_since==0)
+               g_channel_state[ci].pending_links[li].absent_since=now;
+            int elapsed=(int)(now-g_channel_state[ci].pending_links[li].absent_since);
+            if(elapsed<InpEmptyMasterConfirmSeconds)
+               blocked="Aún se está confirmando la ausencia de la pendiente Master vinculada.";
+         }
       }
 
-      if(!safe_orphan)
+      if(blocked!="")
       {
-         // El Master no tiene pendientes, pero todavia no lleva el tiempo
-         // suficiente para fiarse de ese cero.
-         PersistAlert(
-            "PAMB|"+o.channel+"|"+
-            StringFormat("%I64u",so[s].ticket),
+         RemoveProblem(delete_problem);
+         ClearMarketWait(delete_problem);
+         ClearAlert("PEXTRA|"+o.channel+"|"+ticket);
+         ClearAlert("PBLOCK|"+delete_problem);
+         PersistAlert(ambiguous_key,
             AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+
             "\n\nPROBLEMA:\nExiste una orden pendiente en el Slave que no se puede emparejar.\n\n"+
-            SlavePendingDetails(so[s])+
-            "\n\nACCIÓN:\nEl snapshot del Master no tiene ninguna pendiente, pero aún no lo"+
-            " confirma el tiempo suficiente."+
-            "\nQuedan "+IntegerToString(MasterEmptyPendingSeconds(o.channel))+
-            " s antes de considerar la orden huérfana."+
-            "\nUn Master recién reconfigurado publica el mismo cero que un Master sin pendientes.");
-
+            SlavePendingDetails(so[s])+master_detail+
+            "\n\nACCIÓN:\n"+blocked);
          continue;
       }
 
-      ResolveAlert(
-         "PAMB|"+o.channel+"|"+
-         StringFormat("%I64u",so[s].ticket),
+      ResolveAlert(ambiguous_key,
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-         "\n\nPROBLEMA RESUELTO:\nLa orden pendiente del Slave ya se puede evaluar: el Master no tiene pendientes."+
-         "\nTicket Slave: "+StringFormat("%I64u",so[s].ticket));
+         "\n\nPROBLEMA RESUELTO:\nSe confirmó la ausencia de la pendiente Master vinculada."+
+         "\nTicket Slave: "+ticket+master_detail);
 
-      string delete_problem="DELETE|"+o.channel+"|"+StringFormat("%I64u",so[s].ticket);
-      string key=
-         "PEXTRA|"+o.channel+"|"+
-         StringFormat("%I64u",so[s].ticket);
+      string key="PEXTRA|"+o.channel+"|"+ticket;
       string detail=
          "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
-         SlavePendingDetails(so[s]);
+         SlavePendingDetails(so[s])+master_detail;
       string alert=AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+detail+
          "\n\nACCIÓN:\nEsperando que el problema persista antes de eliminarla automáticamente.";
       if(MarketWaiting(delete_problem))
@@ -4902,18 +4925,8 @@ void CheckPending(const Owner &o,const Snap &snap)
 
       // Final safety re-check.
       OrdRec live;
-
-      string latest_blocked="";
-      if(!MasterStillEmptyBeforeDelete(o,latest_blocked))
-      {
-         PersistAlert("PBLOCK|"+delete_problem,
-            AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
-            "\n\nACCIÓN:\nNo se puede eliminar automáticamente.\n"+latest_blocked);
-         RemoveProblem(delete_problem);
-         continue;
-      }
-
-      if(!StillOwnedPending(o,so[s].ticket,live))
+      if(!StillOwnedPending(o,so[s].ticket,live) ||
+         live.symbol!=so[s].symbol || live.type!=so[s].type)
          continue;
 
       string delete_blocked="";
@@ -4926,13 +4939,26 @@ void CheckPending(const Owner &o,const Snap &snap)
          continue;
       }
 
+      PendingLink link=g_channel_state[ci].pending_links[li];
+      if(!MasterStillAbsentBeforeDelete(o,link,live,delete_blocked))
+      {
+         int current=PendingLinkIndex(g_channel_state[ci].pending_links,live.ticket);
+         if(current>=0)
+            g_channel_state[ci].pending_links[current].absent_since=0;
+         PersistAlert("PBLOCK|"+delete_problem,
+            AlertHeader(snap,"🟡 COPYMONITOR — BLOQUEADO")+detail+
+            "\n\nACCIÓN:\nNo se puede eliminar automáticamente.\n"+delete_blocked);
+         RemoveProblem(delete_problem);
+         continue;
+      }
+
       ResetLastError();
       bool ok=RegisterAutoActionAnd(o.channel,
                  TradeRequestSucceeded(g_trade.OrderDelete(so[s].ticket)));
 
       detail=
          "\n\nPROBLEMA:\nSe encontró una orden pendiente extra en el Slave.\n\n"+
-         SlavePendingDetails(live);
+         SlavePendingDetails(live)+master_detail;
 
       if(ok)
       {
@@ -5219,6 +5245,8 @@ void ProcessOwner(const Owner &o,const Snap &s)
       if(ci>=0)
          g_channel_state[ci].offline_since=0;
 
+      TrackChannelSnapshot(o.channel,s);
+
       // Tras una caida, o al arrancar, se exige una ventana corta de datos
       // estables antes de reanudar matching y correcciones.
       if(!ChannelRecoveryConfirmed(o.channel))
@@ -5229,10 +5257,6 @@ void ProcessOwner(const Owner &o,const Snap &s)
          "\n\nPROBLEMA RESUELTO:\nEl terminal Master ha recuperado la conexión con su servidor."+
          "\n\nACCIÓN:\nLa comparación y las correcciones automáticas se reanudan.");
    }
-
-   // Solo un snapshot continuamente confiable alimenta la confirmacion de
-   // Master vacio que puede autorizar el borrado de una pendiente.
-   TrackChannelSnapshot(o.channel,s);
 
    // La falta de permiso de trading no se avisa por si sola: queda en el panel
    // y se informa como BLOQUEADO sobre el problema concreto que no se pudo
@@ -5401,7 +5425,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.30 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.31 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5457,7 +5481,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.30 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.31 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";

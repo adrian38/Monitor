@@ -133,12 +133,11 @@ propiedad. Ver [alert_lifecycle.md](alert_lifecycle.md).
   sólo después de que la discrepancia persista y se revalide. Inmediatamente
   antes de toda acción se vuelve a leer un snapshot fresco de esquema `5` y se
   confirman la misma cuenta, sesión y valores Master. Crear reconcilia además
-  la cuenta Slave y borrar vuelve a demostrar que el Master sigue vacío.
+  la cuenta Slave y borrar vuelve a validar el criterio aplicable a la copia.
 - Una pendiente sólo se borra si pertenece al owner evaluado, sigue siendo
-  extra y permanece así durante el tiempo de confirmación, y además el
-  snapshot del Master lleva `InpEmptyMasterConfirmSeconds` seguidos sin
-  ninguna pendiente. Un Master recién reconfigurado publica el mismo cero que
-  un Master que de verdad no tiene nada.
+  extra y permanece así durante el tiempo de confirmación. En MT5
+  `InpEmptyMasterConfirmSeconds` se aplica a la ausencia de su ticket Master
+  vinculado y de alternativas compatibles. En MT4 se aplica al canal vacío.
 - Una copia que existe con otro volumen no es una copia faltante: se avisa como
   `POSVOL` o `PVOL` y **nunca** se responde creando una segunda. El volumen de
   una posición no se corrige jamás; el de una pendiente tampoco, porque

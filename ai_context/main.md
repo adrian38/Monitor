@@ -10,7 +10,7 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   automatización.
 - [development.md](development.md): flujo de edición, versionado y verificación.
 - [pending_matching.md](pending_matching.md): emparejamiento uno a uno de
-  pendientes, detección de faltantes y política conservadora de borrado.
+  pendientes, detección de faltantes y borrado por pareja de tickets en MT5.
 - [ambiguous_matching.md](ambiguous_matching.md): desempate por valores cuando
   dos posiciones o pendientes gemelas son indistinguibles en el snapshot y
   unicidad del enlace en ambos sentidos.

@@ -46,7 +46,7 @@ retiran de todas las comprobaciones posteriores. Luego se emparejan las
 pendientes Master no ignoradas con la copia compatible más cercana en precio.
 `PMISS` cuenta Master no emparejadas; no compara únicamente tamaños de arrays.
 
-Una Slave no emparejada sólo se considera huérfana borrable cuando el snapshot
+En MT4, una Slave no emparejada sólo se considera huérfana borrable cuando el snapshot
 Master no contiene ninguna pendiente **y lleva así
 `InpEmptyMasterConfirmSeconds` seguidos**. La condición «el Master no tiene
 pendientes» la cumple también un Master recién reconfigurado —otro filtro de
@@ -90,12 +90,25 @@ de las dos pasadas encontró la candidata. `CheckOpen` deja las posiciones no em
 para que `CheckPending` las consulte; por eso el orden de las dos llamadas en
 `ProcessOwner` importa. Ver [alert_lifecycle.md](alert_lifecycle.md).
 
-## Borrado de una pendiente extra
+## Borrado por pareja de tickets en MT5
 
-Antes del borrado se espera `InpExtraPendingConfirmSeconds`, se vuelve a
-seleccionar el ticket y se comprueban de nuevo tipo pendiente, filtro de símbolo
-y ownership por comentario. Justo antes de enviar se relee el snapshot, se
-confirman esquema 5, cuenta, sesión, enlace y ventana de recuperación, y se
-demuestra otra vez que el Master continúa sin pendientes. Las posiciones
-abiertas nunca se cierran ni se modifican desde este flujo: sólo se leen para
-reconocer una activación temprana.
+Desde la v1.31 el Slave recuerda en memoria las parejas que el matching
+identifica con el volumen esperado y una sola candidata por lado, incluso si
+se ignora el volumen al buscar posibles competidoras. Un ticket Master
+ignorado no puede autorizar un borrado. Si la pareja se vuelve ambigua o el
+Slave queda protegido por otro emparejamiento, se descarta el vínculo.
+
+Cuando desaparece el ticket Master, se confirma su ausencia durante
+`InpEmptyMasterConfirmSeconds` y después se exige que la copia siga sobrando
+durante `InpExtraPendingConfirmSeconds`. Una pendiente de AUDCAD no bloquea
+una baja de XAUUSD. Otra pendiente del símbolo equivalente y del mismo tipo
+puede explicar la copia y bloquea el borrado, incluso con un volumen distinto.
+Sin vínculo previo se emite `PAMB`. Por eso una copia que ya estaba huérfana
+al instalar la versión necesita revisión manual. Una pérdida de confianza o un
+reinicio descarta los vínculos y los contadores.
+
+Justo antes del borrado se vuelve a seleccionar el ticket Slave y se
+comprueban tipo pendiente, filtro de símbolo y ownership por comentario.
+Después se relee el snapshot para confirmar esquema 5, cuenta, sesión, enlace,
+ventana de recuperación y ausencia de la pendiente vinculada y de alternativas
+compatibles. Las posiciones abiertas quedan fuera de este flujo.

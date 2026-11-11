@@ -10,8 +10,9 @@ El Slave sólo puede corregir automáticamente cuatro clases de problema:
    precio stop-limit, así que también se pueden crear BUY/SELL STOP LIMIT; con
    un Master de esquema 1 o 2 ese precio no llega y la creación queda
    `BLOQUEADO`.
-3. Pendiente extra: mantiene la regla conservadora existente y sólo borra si el
-   Master no tiene ninguna pendiente que pueda justificarla.
+3. Pendiente extra: MT5 exige un vínculo previo entre tickets y confirma la
+   desaparición de esa pendiente Master. MT4 exige que el canal quede vacío.
+   Ver [pending_matching.md](pending_matching.md).
 4. Precio, precio límite, SL o TP distintos en una pendiente emparejada:
    modifica esos valores conservando tipo de tiempo y expiración de la copia.
 
@@ -24,9 +25,9 @@ propio retardo desde la v1.22. Al cumplirse el plazo se releen las colecciones,
 se revalida ownership y se actúa sólo si el problema continúa. Inmediatamente
 antes de cualquier modificación, creación o borrado se relee el snapshot
 actual y se exigen esquema 5, la misma cuenta y sesión, enlace sano y ventana
-de recuperación. Crear reconcilia además otra vez las pendientes Slave y borrar
-demuestra de nuevo que el Master continúa vacío. Así se cierra la carrera en la
-que Copyix o el Master cambian durante las comprobaciones del mismo ciclo.
+de recuperación. Crear reconcilia además otra vez las pendientes Slave.
+Borrar vuelve a comprobar la ausencia de la orden vinculada en MT5 o el canal
+vacío en MT4.
 
 Si Copyix resuelve durante la espera, se cancela el candidato y se envía
 `RESUELTO`. Si CopyMonitor actúa, verifica el estado posterior y envía siempre

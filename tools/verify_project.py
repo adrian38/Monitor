@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_30_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_31_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
@@ -368,10 +368,9 @@ BLIND_SPOT_TOKENS = (
     # profile any more.
     "InpAlertExtraPositions",
     "AlertExtraPositions(",
-    # The only destructive action needs the Master to have been empty for a
-    # while: a freshly reconfigured Master publishes the very same zero.
+    # The only destructive action requires a continuously trusted snapshot
+    # and a confirmation period.
     "TrackChannelSnapshot(",
-    "MasterEmptyConfirmed(",
     "InpEmptyMasterConfirmSeconds",
     # A copier and a monitor undoing each other must not ping-pong forever.
     "AutoActionAllowed(",
@@ -427,7 +426,6 @@ BLIND_SPOT_TOKENS = (
     "CurrentMasterPosition(",
     "SameMasterPositionValues(",
     "SameMasterOrderValues(",
-    "MasterStillEmptyBeforeDelete(",
     "CM_CREATE_PRESENT",
     # The snapshot reader rejects malformed or out-of-order records.
     "bool meta=false,en=false,malformed=false;",
@@ -917,6 +915,9 @@ def main() -> int:
             "SYMBOL_TRADE_FREEZE_LEVEL",
             "PositionNotFrozen(",
             "SymbolIsSynchronized(",
+            "RefreshPendingLinks(",
+            "UniquePendingDeletePair(",
+            "MasterStillAbsentBeforeDelete(",
         ),
         failures,
     )
@@ -937,7 +938,12 @@ def main() -> int:
     check_alert_lifecycle("slave mt4", mt4["slave"], failures)
     # MT4 accounts are always hedging and the freeze distance already had its
     # own check, so the MQL5-only tokens do not apply here.
-    check_blind_spots("slave mt4", mt4["slave"], ("IsConnected()",), failures)
+    check_blind_spots(
+        "slave mt4",
+        mt4["slave"],
+        ("IsConnected()", "MasterEmptyConfirmed(", "MasterStillEmptyBeforeDelete("),
+        failures,
+    )
     check_tunables(mt4, failures)
 
     # The channel rule is shared by every EA that names the snapshot file,
