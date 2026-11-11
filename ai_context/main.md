@@ -14,6 +14,8 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
 - [ambiguous_matching.md](ambiguous_matching.md): desempate por valores cuando
   dos posiciones o pendientes gemelas son indistinguibles en el snapshot y
   unicidad del enlace en ambos sentidos.
+- [copiix_log_matching.md](copiix_log_matching.md): diagnóstico opcional de
+  posiciones ambiguas con Journals y logs de Experts de Copiix en MT5.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
   identificadores de cuenta y datos operativos exigidos en cada aviso.
 - [alert_lifecycle.md](alert_lifecycle.md): una clave por problema, quién envía

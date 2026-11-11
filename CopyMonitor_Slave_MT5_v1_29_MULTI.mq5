@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_28_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_29_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.28"
-#property description "CopyMonitor Slave MT5 v1.28 MULTI"
+#property version "1.29"
+#property description "CopyMonitor Slave MT5 v1.29 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -222,8 +222,10 @@ input int InpTelegramRetryMaxSeconds                  = 300;
 
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
+input bool   InpUseCopiixLogMatches                   = false;
 
 struct PosRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; };
+struct CopiixPosLink { ulong master,slave; };
 struct OrdRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; double stoplimit; };
 struct Snap
 {
@@ -2875,6 +2877,85 @@ bool PosSlaveIdentifiesMaster(const Owner &o,const Snap &snap,const int current,
    }
    return compatible<=1 || (current_agrees && agreeing==1);
 }
+long CopiixIndexNumber(const string field)
+{
+   long value=StringToInteger(field);
+   if(value<=0 || IntegerToString(value)!=field)
+      return 0;
+   return value;
+}
+
+bool ReadCopiixPositionLinks(const Snap &snap,CopiixPosLink &links[])
+{
+   if(snap.schema!=5 || snap.connected!=CM_LINK_UP)
+      return false;
+
+   string slave_account=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+   string path="CopyMonitorMulti\\CM_COPIIX_"+snap.channel+"_"+slave_account+".txt";
+   int file=FileOpen(path,FILE_COMMON|FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
+   if(file==INVALID_HANDLE)
+      return false;
+
+   string fields[];
+   bool valid=false;
+   if(FileSize(file)<=200000 && StringSplit(FileReadString(file),'|',fields)==6)
+   {
+      long written=CopiixIndexNumber(fields[5]);
+      long age=(long)TimeGMT()-written;
+      valid=fields[0]=="META" && fields[1]=="1" && fields[2]==snap.channel &&
+            fields[3]==IntegerToString(snap.account) && fields[4]==slave_account &&
+            written>0 && age>=-1 && age<=120;
+   }
+
+   ulong slave_tickets[];
+   bool complete=false;
+   while(valid && !FileIsEnding(file))
+   {
+      string line=FileReadString(file);
+      if(line=="END")
+      {
+         complete=FileIsEnding(file);
+         break;
+      }
+      int count=ArraySize(links);
+      if(count>=4096 || StringSplit(line,'|',fields)!=3 || fields[0]!="POS")
+         break;
+      ulong master=(ulong)CopiixIndexNumber(fields[1]);
+      ulong slave=(ulong)CopiixIndexNumber(fields[2]);
+      if(master==0 || slave==0 || (count>0 && links[count-1].master>=master))
+         break;
+      ArrayResize(links,count+1,128);
+      ArrayResize(slave_tickets,count+1,128);
+      links[count].master=master;
+      links[count].slave=slave;
+      slave_tickets[count]=slave;
+   }
+   FileClose(file);
+   if(!complete)
+      return false;
+
+   ArraySort(slave_tickets);
+   for(int i=1;i<ArraySize(slave_tickets);i++)
+      if(slave_tickets[i]==slave_tickets[i-1])
+         return false;
+   return true;
+}
+
+int CopiixPositionCandidate(const Owner &o,const PosRec &master,const PosRec &slaves[],
+                            const bool &used[],const CopiixPosLink &links[])
+{
+   for(int i=0;i<ArraySize(links);i++)
+   {
+      if(links[i].master!=master.ticket)
+         continue;
+      for(int j=0;j<ArraySize(slaves);j++)
+         if(!used[j] && slaves[j].ticket==links[i].slave && PosCompatible(o,master,slaves[j]))
+            return j;
+      break;
+   }
+   return -1;
+}
+
 void CheckOpen(const Owner &o,const Snap &snap)
 {
    PosRec sp[];
@@ -2900,6 +2981,9 @@ void CheckOpen(const Owner &o,const Snap &snap)
    bool deferred[];
    ArrayResize(deferred,ArraySize(snap.pos));
    ArrayInitialize(deferred,false);
+   CopiixPosLink log_links[];
+   bool read_log_links=false;
+   bool log_links_valid=false;
 
    // 1) Resolver primero la ambiguedad: cuando varias copias libres encajan
    //    con la misma posicion Master, la suya es la que ya lleva su SL y su
@@ -2983,7 +3067,27 @@ void CheckOpen(const Owner &o,const Snap &snap)
 
       if(tied>1)
       {
-         PersistAlert(amb_key,
+         if(InpUseCopiixLogMatches && !read_log_links)
+         {
+            read_log_links=true;
+            log_links_valid=ReadCopiixPositionLinks(snap,log_links);
+         }
+         int log_candidate=-1;
+         if(log_links_valid)
+            log_candidate=CopiixPositionCandidate(o,snap.pos[i],sp,su,log_links);
+
+         string log_detail="";
+         if(log_candidate>=0)
+            log_detail="\nTicket Slave sugerido por los logs de Copiix: "+
+                       StringFormat("%I64u",sp[log_candidate].ticket);
+
+         if(log_candidate>=0 && PosStopsAgree(snap.pos[i],sp[log_candidate]))
+            ResolveAlert(amb_key,
+               AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
+               "\n\nLos logs de Copiix señalan una copia compatible y sus niveles coinciden."+
+               "\nSímbolo: "+sp[log_candidate].symbol+"\n"+master_line+log_detail);
+         else
+            PersistAlert(amb_key,
             AlertHeader(snap,"🟠 COPYMONITOR — ALERTA")+
             "\n\nPROBLEMA:\nNo se puede enlazar de forma fiable una posición Master con su copia Slave.\n\n"+
             "Estado: POSICIÓN ACTIVA\n"+
@@ -2991,7 +3095,7 @@ void CheckOpen(const Owner &o,const Snap &snap)
             master_line+"\n"+
             (reverse_ambiguous
                ? "Una misma copia Slave encaja con varios tickets Master libres."
-               : "Copias Slave igualmente compatibles: "+IntegerToString(tied))+
+               : "Copias Slave igualmente compatibles: "+IntegerToString(tied))+log_detail+
             "\n\nACCIÓN:\nRevisar manualmente. No se enlaza ninguna copia y no se hará ninguna corrección automática.");
          ResolveAlert(miss_key,
             AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
@@ -5274,7 +5378,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.28 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.29 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5330,7 +5434,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.28 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.29 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";
