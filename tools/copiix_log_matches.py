@@ -59,13 +59,19 @@ def collect(master, slave, master_account, slave_account, days):
         orders.extend((stamp, int(ticket), side, kind)
                       for stamp, (account, ticket, side, kind) in journal
                       if account == master_account)
-        slave_orders = {ticket: (side, kind)
-                        for _, (account, ticket, side, kind) in slave_journal
-                        if account == slave_account}
+        # A pending keeps its ticket when it is activated, so the Journal can
+        # contain both its original pending type and a later market entry.  A
+        # dict comprehension used to retain only the last record and could
+        # erase the exact type evidence needed by the correlation.
+        slave_orders = {}
+        for _, (account, ticket, side, kind) in slave_journal:
+            if account == slave_account:
+                slave_orders.setdefault(ticket, set()).add((side, kind))
         for stamp, (copy_id,) in outbound:
             sends.setdefault(copy_id, stamp)
         for _, (ticket, copy_id) in inbound:
-            copies.setdefault(copy_id, set()).add((int(ticket), slave_orders.get(ticket)))
+            order_types = frozenset(slave_orders.get(ticket, ()))
+            copies.setdefault(copy_id, set()).add((int(ticket), order_types))
     return orders, sends, copies, failed
 
 
@@ -86,8 +92,8 @@ def correlate(orders, sends, copies):
         slave_group = copies.get(copy_id, set())
         if len(group) == len(slave_group) == 1:
             (master_ticket, side, kind), = group
-            (slave_ticket, slave_order), = slave_group
-            if (kind and slave_order == (side, kind)
+            (slave_ticket, slave_order_types), = slave_group
+            if (kind and (side, kind) in slave_order_types
                     and claims[master_ticket] == slave_claims[slave_ticket] == 1):
                 links.append((master_ticket, slave_ticket))
     return sorted(links)[-MAX_LINKS:]

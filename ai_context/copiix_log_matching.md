@@ -16,6 +16,12 @@ cierra el aviso de ambigüedad con la explicación del cruce. Si difieren, manti
 el aviso y añade el ticket sugerido. El índice no modifica las asignaciones
 operativas ni autoriza cambios de SL/TP, creación o eliminación de pendientes.
 
+El Journal Slave puede repetir el mismo ticket durante el ciclo de vida de la
+pendiente, incluida una línea posterior ya como operación de mercado. El
+auxiliar conserva todos los tipos observados y exige que entre ellos esté el
+sentido y tipo de pendiente exactos; la última línea nunca reemplaza por sí sola
+la evidencia original.
+
 ## Uso
 
 Requiere Python 3.9 o posterior. Desde el repositorio, ejecutar primero en
