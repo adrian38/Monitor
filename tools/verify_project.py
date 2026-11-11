@@ -10,13 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT5_v1_17_MULTI.mq5",
-    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_29_MULTI.mq5",
+    "slave": ROOT / "CopyMonitor_Slave_MT5_v1_30_MULTI.mq5",
 }
 # MT4 port of the same pair. It writes and reads the very same snapshot, so a
 # Master of one platform can feed a Slave of the other.
 MT4_SOURCES = {
     "master": ROOT / "CopyMonitor_Master_MT4_v1_03_MULTI.mq4",
-    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_08_MULTI.mq4",
+    "slave": ROOT / "CopyMonitor_Slave_MT4_v1_09_MULTI.mq4",
 }
 # Standalone MT4 connection watchdog. It shares no snapshot with the EA pairs.
 WATCHDOG = ROOT / "CopyMonitor_Watchdog_MT4_v1_00.mq4"
@@ -494,6 +494,8 @@ def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
         "ClassifyHidden(",
         "AnyOwnerMatches(",
         "MasterReachable(",
+        "InpIgnoreSlaveComments",
+        "SlaveCommentIgnored(",
         'ResolveAlert(key,',
         # The count moves, so the notice has to move with it: one message per
         # distinct picture, never one per cycle.
@@ -501,6 +503,44 @@ def check_alert_lifecycle(name: str, slave: str, failures: list[str]) -> None:
         "AlertOnChange(key,signature,",
     ):
         require(counted in slave, f"{name}: count reconciliation missing: {counted}", failures)
+
+    require(
+        "LoadDelimitedList(InpIgnoreSlaveComments,g_ignored_comments);" in slave,
+        f"{name}: ignored Slave comments are not loaded during configuration",
+        failures,
+    )
+    ignored_body = function_body(slave, "SlaveCommentIgnored")
+    require(
+        "comment==g_ignored_comments[i]" in ignored_body,
+        f"{name}: ignored Slave comments must use exact matching",
+        failures,
+    )
+    for collection in ("SlavePosForOwner", "SlaveOrdForOwner"):
+        body = function_body(slave, collection)
+        ignored_at = body.find("SlaveCommentIgnored(")
+        owner_at = body.find("OwnerCommentMatch(")
+        require(
+            ignored_at >= 0 and owner_at >= 0 and ignored_at < owner_at,
+            f"{name}: {collection} does not exclude ignored comments before ownership",
+            failures,
+        )
+    hidden_body = function_body(slave, "ClassifyHidden")
+    ignored_at = hidden_body.find("SlaveCommentIgnored(")
+    owner_at = hidden_body.find("OwnerCommentMatch(")
+    require(
+        ignored_at >= 0 and owner_at >= 0 and ignored_at < owner_at,
+        f"{name}: ignored comments can still leak into aggregate counts",
+        failures,
+    )
+
+    if name == "slave":
+        require(
+            "FILE_SHARE_READ|FILE_SHARE_WRITE" in function_body(
+                slave, "ReadCopiixPositionLinks"
+            ),
+            f"{name}: Copiix index reader can block its atomic publisher",
+            failures,
+        )
 
 
 def check_tunables(source: dict[str, str], failures: list[str]) -> None:

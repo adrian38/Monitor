@@ -10,11 +10,11 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 - `CopyMonitor_Master_MT5_v1_17_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_29_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_30_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_08_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  `CopyMonitor_Slave_MT4_v1_09_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -141,6 +141,11 @@ En modo single-master, configura `InpMasterChannel`, el multiplicador y, si es
 necesario, el comentario propietario. En modo multi-master, las cuatro listas
 `InpMasterChannels`, `InpOwnerComments`, `InpMasterProfiles` e
 `InpVolumeMultipliers` son posicionales y deben tener la misma longitud.
+
+`InpIgnoreSlaveComments` acepta comentarios exactos separados por coma o punto
+y coma. Las posiciones y pendientes Slave con uno de esos comentarios quedan
+fuera del ownership, del emparejamiento, de las correcciones y del aviso
+agregado de cantidades; la comparación distingue mayúsculas y minúsculas.
 
 Los temporizadores y límites internos están expuestos en el grupo
 `TIMERS / LIMITES INTERNOS` del Slave y `TIMERS` del Master, con los valores que

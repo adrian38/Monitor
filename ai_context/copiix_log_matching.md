@@ -46,3 +46,10 @@ publica por reemplazo atómico un archivo aparte en
 Un índice ausente, incompleto, duplicado, caducado o de otra cuenta o canal
 deja al Slave usando sus reglas habituales. El snapshot Master conserva su
 esquema y formato.
+
+La lectura de los logs usa un handle binario compartido y lo cierra en cuanto
+ha tomado la foto de bytes; no bloquea ni escribe el archivo que MT5/Copiix
+mantiene abierto para anexar. Si la foto termina a mitad de registro, esa última
+línea se descarta hasta el siguiente ciclo. El Slave abre el índice publicado
+con lectura y escritura compartidas, y el auxiliar reintenta brevemente el
+reemplazo atómico si Windows conserva una lectura puntual sobre el nombre.

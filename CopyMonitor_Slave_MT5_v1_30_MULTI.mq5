@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_29_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_30_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.29"
-#property description "CopyMonitor Slave MT5 v1.29 MULTI"
+#property version "1.30"
+#property description "CopyMonitor Slave MT5 v1.30 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -76,6 +76,9 @@ input group "===== INSTANCE SCOPE / IGNORE ====="
 // 123456;123457
 // MASTER_280:123456;MASTER_687:998877
 input string InpIgnoreMasterTickets                   = "";
+// Comentarios exactos de operaciones Slave que quedan totalmente fuera de la
+// vigilancia. Acepta coma o punto y coma; distingue mayusculas/minusculas.
+input string InpIgnoreSlaveComments                   = "";
 // These filters apply to symbols in THIS Slave terminal.
 // Empty include = all. Ignore always wins.
 // Accepts comma or semicolon separated symbols.
@@ -331,6 +334,7 @@ PosRec g_unpaired_pos[];
 Owner        g_owners[];
 SymbolMapRec g_symbol_maps[];
 IgnoreRec    g_ignored[];
+string       g_ignored_comments[];
 string       g_include_symbols[];
 string       g_exclude_symbols[];
 SymbolTolRec g_symbol_tols[];
@@ -932,7 +936,7 @@ bool LoadIgnoredTickets()
    return true;
 }
 
-void LoadSymbolList(string raw,string &out[])
+void LoadDelimitedList(string raw,string &out[])
 {
    StringReplace(raw,";",",");
    SplitClean(raw,',',out);
@@ -981,8 +985,9 @@ bool BuildConfig()
    if(!ValidateSymbolToleranceAliases())
       return false;
 
-   LoadSymbolList(InpSlaveSymbolsFilter,g_include_symbols);
-   LoadSymbolList(InpSlaveSymbolsIgnore,g_exclude_symbols);
+   LoadDelimitedList(InpSlaveSymbolsFilter,g_include_symbols);
+   LoadDelimitedList(InpSlaveSymbolsIgnore,g_exclude_symbols);
+   LoadDelimitedList(InpIgnoreSlaveComments,g_ignored_comments);
    BuildChannelState();
    return true;
 }
@@ -997,6 +1002,14 @@ bool MasterTicketIgnored(const string channel,const ulong ticket)
       if(!g_ignored[i].scoped || g_ignored[i].channel==channel)
          return true;
    }
+   return false;
+}
+
+bool SlaveCommentIgnored(const string comment)
+{
+   for(int i=0;i<ArraySize(g_ignored_comments);i++)
+      if(comment==g_ignored_comments[i])
+         return true;
    return false;
 }
 
@@ -1910,6 +1923,7 @@ void SlavePosForOwner(const Owner &o,PosRec &a[])
       if(!SlaveSymbolAllowed(symbol))continue;
 
       string c=PositionGetString(POSITION_COMMENT);
+      if(SlaveCommentIgnored(c))continue;
       if(!OwnerCommentMatch(o,c))continue;
 
       PosRec x; x.ticket=tk;x.symbol=symbol;x.type=(int)PositionGetInteger(POSITION_TYPE);
@@ -1927,7 +1941,9 @@ void SlaveOrdForOwner(const Owner &o,OrdRec &a[])
       string symbol=OrderGetString(ORDER_SYMBOL);
       if(symbol=="")continue;
       if(!SlaveSymbolAllowed(symbol))continue;
-      string c=OrderGetString(ORDER_COMMENT);if(!OwnerCommentMatch(o,c))continue;
+      string c=OrderGetString(ORDER_COMMENT);
+      if(SlaveCommentIgnored(c))continue;
+      if(!OwnerCommentMatch(o,c))continue;
       OrdRec x;x.ticket=tk;x.symbol=symbol;x.type=(int)t;x.vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
       x.price=OrderGetDouble(ORDER_PRICE_OPEN);x.sl=OrderGetDouble(ORDER_SL);x.tp=OrderGetDouble(ORDER_TP);
       x.stoplimit=OrderGetDouble(ORDER_PRICE_STOPLIMIT);AddOrd(a,x);
@@ -2892,7 +2908,11 @@ bool ReadCopiixPositionLinks(const Snap &snap,CopiixPosLink &links[])
 
    string slave_account=IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
    string path="CopyMonitorMulti\\CM_COPIIX_"+snap.channel+"_"+slave_account+".txt";
-   int file=FileOpen(path,FILE_COMMON|FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
+   // El auxiliar Python publica por reemplazo atomico. SHARE_WRITE evita que
+   // esta lectura breve le niegue innecesariamente el acceso al indice; si
+   // Windows mantiene ocupado el nombre, el publicador reintenta el rename.
+   int file=FileOpen(path,FILE_COMMON|FILE_READ|FILE_TXT|FILE_ANSI|
+                     FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(file==INVALID_HANDLE)
       return false;
 
@@ -4968,6 +4988,9 @@ void ClassifyHidden(const Owner &o,const string symbol,const string comment,
                     int &filtered,int &unknown)
 {
    if(symbol=="") return;
+   // La exclusion explicita gana al ownership y al filtro de simbolos: estas
+   // operaciones no deben provocar tampoco el aviso agregado COUNT.
+   if(SlaveCommentIgnored(comment)) return;
    if(OwnerCommentMatch(o,comment))
    {
       if(!SlaveSymbolAllowed(symbol)) filtered++;
@@ -5378,7 +5401,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.29 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.30 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5434,7 +5457,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.29 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.30 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";
@@ -5458,6 +5481,7 @@ void Panel(const Owner &o[],const Snap &s[])
       p+="\n";
    }
    p+="\nIgnored MASTER tickets: "+(InpIgnoreMasterTickets=="" ? "NONE" : InpIgnoreMasterTickets)+"\n";
+   p+="Ignored SLAVE comments: "+(ArraySize(g_ignored_comments)==0 ? "NONE" : InpIgnoreSlaveComments)+"\n";
    p+="Slave include symbols: "+(ArraySize(g_include_symbols)==0 ? "ALL" : InpSlaveSymbolsFilter)+"\n";
    p+="Slave ignore symbols: "+(ArraySize(g_exclude_symbols)==0 ? "NONE" : InpSlaveSymbolsIgnore)+"\n";
    p+="Open positions: monitor only (SL/TP included)\n";

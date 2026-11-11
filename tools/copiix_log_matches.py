@@ -19,6 +19,8 @@ MASTER_OPEN = re.compile(r"I send the command 'open'.*with the ticket '([^']+)'$
 SLAVE_OPEN = re.compile(r"The order was opened successfully: ([0-9]+) / Copiix Ticket : (\S+)$")
 WINDOW_MS = 100
 MAX_LINKS = 4096
+PUBLISH_REPLACE_ATTEMPTS = 5
+PUBLISH_REPLACE_DELAY_SECONDS = 0.05
 
 
 def events(path, source, pattern, day):
@@ -99,6 +101,18 @@ def correlate(orders, sends, copies):
     return sorted(links)[-MAX_LINKS:]
 
 
+def replace_with_retry(source, destination):
+    """Atomically publish despite a short-lived reader on Windows."""
+    for attempt in range(PUBLISH_REPLACE_ATTEMPTS):
+        try:
+            source.replace(destination)
+            return
+        except PermissionError:
+            if attempt + 1 == PUBLISH_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(PUBLISH_REPLACE_DELAY_SECONDS)
+
+
 def publish(path, channel, master_account, slave_account, links):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -111,7 +125,7 @@ def publish(path, channel, master_account, slave_account, links):
                 stream.write(f"POS|{master}|{slave}\n")
             stream.write("END\n")
             stream.close()
-            temporary.replace(path)
+            replace_with_retry(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
 

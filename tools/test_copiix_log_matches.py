@@ -2,11 +2,20 @@
 
 from datetime import date
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from copiix_log_matches import ORDER, collect, correlate, events, publish
+from copiix_log_matches import (
+    ORDER,
+    collect,
+    correlate,
+    events,
+    publish,
+    replace_with_retry,
+)
 
 
 class CopiixLogMatchesTests(unittest.TestCase):
@@ -36,6 +45,69 @@ class CopiixLogMatchesTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_log_reader_and_external_appender_do_not_block_each_other(self):
+        day = date(2026, 11, 11)
+        first = (
+            "AB\t0\t12:34:56.789\tTrades\t"
+            "'123': order #456 buy stop EURUSD at 1.2 done in 1 ms\r\n"
+        )
+        second = (
+            "AB\t0\t12:34:57.000\tTrades\t"
+            "'123': order #789 sell limit EURUSD at 1.3 done in 1 ms\r\n"
+        )
+        writer_code = (
+            "import os, pathlib, sys; "
+            "stream=pathlib.Path(sys.argv[1]).open('ab', buffering=0); "
+            "print('READY', flush=True); "
+            "sys.stdin.readline(); "
+            "stream.write(sys.argv[2].encode('utf-16-le')); os.fsync(stream.fileno()); "
+            "print('WROTE', flush=True); "
+            "sys.stdin.readline(); stream.close()"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.log"
+            path.write_text(first, encoding="utf-16")
+            writer = subprocess.Popen(
+                [sys.executable, "-c", writer_code, str(path), second],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(writer.stdout.readline().strip(), "READY")
+
+                # The reader can open and parse while another process keeps an
+                # append handle alive.
+                self.assertEqual(len(list(events(path, "Trades", ORDER, day))), 1)
+
+                # A read handle opened exactly like events() must not prevent
+                # that external process from appending and flushing a record.
+                with path.open("rb") as reader:
+                    writer.stdin.write("append\n")
+                    writer.stdin.flush()
+                    self.assertEqual(writer.stdout.readline().strip(), "WROTE")
+                    self.assertTrue(reader.read(2).startswith(b"\xff\xfe"))
+
+                parsed = list(events(path, "Trades", ORDER, day))
+                self.assertEqual([groups[1] for _, groups in parsed], ["456", "789"])
+            finally:
+                if writer.stdin:
+                    writer.stdin.write("close\n")
+                    writer.stdin.flush()
+                writer.communicate(timeout=5)
+
+    @mock.patch("copiix_log_matches.time.sleep")
+    @mock.patch("pathlib.Path.replace")
+    def test_atomic_publish_retries_a_short_lived_reader(self, replace, sleep):
+        replace.side_effect = [PermissionError("busy"), PermissionError("busy"), None]
+
+        replace_with_retry(Path("temporary"), Path("published"))
+
+        self.assertEqual(replace.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
 
     def test_correlate_accepts_exact_pending_type_among_lifecycle_records(self):
         orders = [(1_000, 101, "buy", "stop")]

@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT4_v1_08_MULTI.mq4                            |
+//| CopyMonitor_Slave_MT4_v1_09_MULTI.mq4                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -9,8 +9,8 @@
 //| de emparejamiento y los mismos limites de automatizacion.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.08"
-#property description "CopyMonitor Slave MT4 v1.08 MULTI"
+#property version "1.09"
+#property description "CopyMonitor Slave MT4 v1.09 MULTI"
 
 // MT4 no tiene CTrade ni MqlTradeRequest: las correcciones se envian con
 // OrderSend, OrderModify y OrderDelete, y el diagnostico sale de GetLastError.
@@ -77,6 +77,9 @@ input string InpExpectedMasterAccounts                = "";
 // 123456;123457
 // MASTER_280:123456;MASTER_687:998877
 input string InpIgnoreMasterTickets                   = "";
+// Comentarios exactos de operaciones Slave que quedan totalmente fuera de la
+// vigilancia. Acepta coma o punto y coma; distingue mayusculas/minusculas.
+input string InpIgnoreSlaveComments                   = "";
 // These filters apply to symbols in THIS Slave terminal.
 // Empty include = all. Ignore always wins.
 // Accepts comma or semicolon separated symbols.
@@ -371,6 +374,7 @@ PosRec g_unpaired_pos[];
 Owner        g_owners[];
 SymbolMapRec g_symbol_maps[];
 IgnoreRec    g_ignored[];
+string       g_ignored_comments[];
 string       g_include_symbols[];
 string       g_exclude_symbols[];
 SymbolTolRec g_symbol_tols[];
@@ -1007,7 +1011,7 @@ bool LoadIgnoredTickets()
    return true;
 }
 
-void LoadSymbolList(string raw,string &out[])
+void LoadDelimitedList(string raw,string &out[])
 {
    StringReplace(raw,";",",");
    SplitClean(raw,(ushort)',',out);
@@ -1056,8 +1060,9 @@ bool BuildConfig()
    if(!ValidateSymbolToleranceAliases())
       return false;
 
-   LoadSymbolList(InpSlaveSymbolsFilter,g_include_symbols);
-   LoadSymbolList(InpSlaveSymbolsIgnore,g_exclude_symbols);
+   LoadDelimitedList(InpSlaveSymbolsFilter,g_include_symbols);
+   LoadDelimitedList(InpSlaveSymbolsIgnore,g_exclude_symbols);
+   LoadDelimitedList(InpIgnoreSlaveComments,g_ignored_comments);
    BuildChannelState();
    return true;
 }
@@ -1072,6 +1077,14 @@ bool MasterTicketIgnored(const string channel,const long ticket)
       if(!g_ignored[i].scoped || g_ignored[i].channel==channel)
          return true;
    }
+   return false;
+}
+
+bool SlaveCommentIgnored(const string comment)
+{
+   for(int i=0;i<ArraySize(g_ignored_comments);i++)
+      if(comment==g_ignored_comments[i])
+         return true;
    return false;
 }
 
@@ -1991,6 +2004,7 @@ void SlavePosForOwner(const Owner &o,PosRec &a[])
       string symbol=OrderSymbol();
       if(symbol=="")continue;
       if(!SlaveSymbolAllowed(symbol))continue;
+      if(SlaveCommentIgnored(OrderComment()))continue;
       if(!OwnerCommentMatch(o,OrderComment()))continue;
 
       PosRec x; x.ticket=(long)OrderTicket();x.symbol=symbol;x.type=OrderType();
@@ -2008,6 +2022,7 @@ void SlaveOrdForOwner(const Owner &o,OrdRec &a[])
       string symbol=OrderSymbol();
       if(symbol=="")continue;
       if(!SlaveSymbolAllowed(symbol))continue;
+      if(SlaveCommentIgnored(OrderComment()))continue;
       if(!OwnerCommentMatch(o,OrderComment()))continue;
       OrdRec x;x.ticket=(long)OrderTicket();x.symbol=symbol;x.type=OrderType();x.vol=OrderLots();
       x.price=OrderOpenPrice();x.sl=OrderStopLoss();x.tp=OrderTakeProfit();
@@ -4916,6 +4931,9 @@ void ClassifyHidden(const Owner &o,const string symbol,const string comment,
                     int &filtered,int &unknown)
 {
    if(symbol=="") return;
+   // La exclusion explicita gana al ownership y al filtro de simbolos: estas
+   // operaciones no deben provocar tampoco el aviso agregado COUNT.
+   if(SlaveCommentIgnored(comment)) return;
    if(OwnerCommentMatch(o,comment))
    {
       if(!SlaveSymbolAllowed(symbol)) filtered++;
@@ -5328,7 +5346,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave MT4 v1.08 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave MT4 v1.09 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5357,7 +5375,7 @@ void Heartbeat(const Owner &o[],const Snap &s[])
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE MT4 v1.08 MULTI\n";
+   string p="COPYMONITOR SLAVE MT4 v1.09 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";
@@ -5380,6 +5398,7 @@ void Panel(const Owner &o[],const Snap &s[])
       p+="\n";
    }
    p+="\nIgnored MASTER tickets: "+(InpIgnoreMasterTickets=="" ? "NONE" : InpIgnoreMasterTickets)+"\n";
+   p+="Ignored SLAVE comments: "+(ArraySize(g_ignored_comments)==0 ? "NONE" : InpIgnoreSlaveComments)+"\n";
    p+="Slave include symbols: "+(ArraySize(g_include_symbols)==0 ? "ALL" : InpSlaveSymbolsFilter)+"\n";
    p+="Slave ignore symbols: "+(ArraySize(g_exclude_symbols)==0 ? "NONE" : InpSlaveSymbolsIgnore)+"\n";
    p+="Open positions: monitor only (SL/TP included)\n";

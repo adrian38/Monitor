@@ -93,6 +93,9 @@ Ver [robustness.md](robustness.md).
 - Precio de entrada, SL y TP se comparan sólo cuando sus opciones están activas.
   El precio stop-limit se compara cuando el Master lo publica.
 - Los tickets Master configurados para ignorar no generan incidencias.
+- Los comentarios Slave configurados para ignorar se comparan de forma exacta
+  y quedan fuera del ownership, el matching, las correcciones y el recuento
+  agregado. La exclusión por comentario prevalece sobre los demás filtros.
 
 ### Lo que el canal no ve
 
