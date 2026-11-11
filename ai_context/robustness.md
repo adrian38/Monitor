@@ -180,7 +180,11 @@ usuario creería estar vigilando lo que no está.
 las tolerancias globales. Un único valor en puntos para toda la cuenta es o
 muchísimo o nada cuando conviven oro, índices y divisas, y una tolerancia
 demasiado estrecha no relaja nada: rompe el emparejamiento y convierte una
-copia correcta en una copia faltante permanente.
+copia correcta en una copia faltante permanente. El símbolo puede ser el nombre
+Master o el Slave de `InpSymbolMaps`: el comparador resuelve el alias hacia el
+símbolo Slave. Una entrada escrita directamente con el nombre Slave tiene
+prioridad; sin ella, dos alias Master del mismo símbolo Slave con valores
+distintos invalidan la configuración en vez de depender del orden de la lista.
 
 Dos cambios pueden rechazar una configuración que antes arrancaba:
 

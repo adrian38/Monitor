@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_27_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_28_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,8 +7,8 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.27"
-#property description "CopyMonitor Slave MT5 v1.27 MULTI"
+#property version "1.28"
+#property description "CopyMonitor Slave MT5 v1.28 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
 
@@ -101,6 +101,7 @@ input int  InpVolumeToleranceSteps                    = 1;
 input bool InpAlertExtraPositions                     = true;
 // Tolerancias por simbolo, para cuando oro, indices y divisas conviven en la
 // misma cuenta y un unico valor en puntos es o muchisimo o nada.
+// Acepta el nombre Master o Slave de InpSymbolMaps; el Slave tiene prioridad.
 // SIMBOLO,entrada,sltp,pendiente;... Ejemplo: XAUUSD,500,100,500;US500,200,50,200
 input string InpSymbolTolerances                      = "";
 
@@ -974,6 +975,8 @@ bool BuildConfig()
    if(!ValidateAutomationIdentity())
       return false;
    if(!LoadSymbolTolerances())
+      return false;
+   if(!ValidateSymbolToleranceAliases())
       return false;
 
    LoadSymbolList(InpSlaveSymbolsFilter,g_include_symbols);
@@ -1943,12 +1946,65 @@ double PointOf(const string s){ double p=SymbolInfoDouble(s,SYMBOL_POINT); retur
 // conviven oro, indices y divisas, y una tolerancia demasiado estrecha no
 // relaja nada: rompe el emparejamiento y convierte una copia correcta en una
 // copia faltante permanente.
-int SymbolTolIndex(const string symbol)
+int SymbolTolIndexExact(const string symbol)
 {
    for(int i=0;i<ArraySize(g_symbol_tols);i++)
       if(g_symbol_tols[i].symbol==symbol)
          return i;
    return -1;
+}
+bool SameSymbolTolerance(const int a,const int b)
+{
+   return g_symbol_tols[a].entry==g_symbol_tols[b].entry &&
+          g_symbol_tols[a].sltp==g_symbol_tols[b].sltp &&
+          g_symbol_tols[a].pending==g_symbol_tols[b].pending;
+}
+// La comparación siempre conoce el nombre Slave. Si la excepción se declaró
+// con el nombre Master, se resuelve a través del mismo mapa que usa el matching.
+// Una entrada explícita para el símbolo Slave prevalece sobre cualquier alias.
+int SymbolTolIndex(const string symbol)
+{
+   int exact=SymbolTolIndexExact(symbol);
+   if(exact>=0)
+      return exact;
+
+   for(int i=0;i<ArraySize(g_symbol_maps);i++)
+   {
+      if(g_symbol_maps[i].slave_symbol!=symbol)
+         continue;
+      int mapped=SymbolTolIndexExact(g_symbol_maps[i].master_symbol);
+      if(mapped>=0)
+         return mapped;
+   }
+   return -1;
+}
+bool ValidateSymbolToleranceAliases()
+{
+   for(int i=0;i<ArraySize(g_symbol_maps);i++)
+   {
+      string slave_symbol=g_symbol_maps[i].slave_symbol;
+      if(SymbolTolIndexExact(slave_symbol)>=0)
+         continue;
+
+      int selected=-1;
+      for(int j=0;j<ArraySize(g_symbol_maps);j++)
+      {
+         if(g_symbol_maps[j].slave_symbol!=slave_symbol)
+            continue;
+         int mapped=SymbolTolIndexExact(g_symbol_maps[j].master_symbol);
+         if(mapped<0)
+            continue;
+         if(selected<0)
+            selected=mapped;
+         else if(!SameSymbolTolerance(selected,mapped))
+         {
+            PrintFormat("[CM SLAVE] Tolerancias contradictorias para aliases del simbolo Slave %s.",
+                        slave_symbol);
+            return false;
+         }
+      }
+   }
+   return true;
 }
 double EntryTolPrice(const string symbol)
 {
@@ -5218,7 +5274,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.27 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.28 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5274,7 +5330,7 @@ int ChannelActionCount(const string channel)
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.27 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.28 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";

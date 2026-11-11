@@ -10,11 +10,11 @@ independiente de MetaTrader 4 que avisa cuando un terminal pierde la conexión.
 
 - `CopyMonitor_Master_MT5_v1_17_MULTI.mq5`: publica posiciones abiertas,
   órdenes pendientes y el bróker Master en el directorio común de MetaTrader.
-- `CopyMonitor_Slave_MT5_v1_27_MULTI.mq5`: compara uno o varios canales,
+- `CopyMonitor_Slave_MT5_v1_28_MULTI.mq5`: compara uno o varios canales,
   comprueba volumen, precio de entrada, SL/TP y pendientes, y puede eliminar
   únicamente pendientes extra confirmadas.
 - `CopyMonitor_Master_MT4_v1_03_MULTI.mq4` y
-  `CopyMonitor_Slave_MT4_v1_07_MULTI.mq4`: los mismos dos EAs para MetaTrader
+  `CopyMonitor_Slave_MT4_v1_08_MULTI.mq4`: los mismos dos EAs para MetaTrader
   4, con el mismo esquema de snapshot y los mismos límites de automatización.
 - `CopyMonitor_Watchdog_MT4_v1_00.mq4`: EA independiente para MetaTrader 4 que
   avisa por Telegram cuando el terminal pierde la conexión con su servidor y
@@ -151,6 +151,11 @@ queda en espera con un solo aviso y se aplica al abrir la sesión.
 Cuando los brokers nombran un instrumento de forma diferente, usa
 `InpSymbolMaps` con entradas `CANAL,SIMBOLO_MASTER,SIMBOLO_SLAVE` separadas por
 punto y coma.
+
+Las excepciones de `InpSymbolTolerances` pueden usar el nombre Master o el
+nombre Slave declarado en ese mapeo. Si aparecen ambos, prevalece la entrada
+del símbolo Slave. Dos nombres Master que apunten al mismo símbolo Slave no
+pueden declarar tolerancias distintas sin una entrada explícita para el Slave.
 
 ## Vigilancia de terminal offline (MT4)
 
