@@ -42,6 +42,14 @@ cuatro casos los datos que habría que comparar son una foto del pasado, y
 corregir contra el pasado es peor que no corregir. Ver
 [robustness.md](robustness.md).
 
+Sobre qué pareja se corrige: desde la v1.37, cuando el índice de Copiix está
+disponible y `InpCopiixLinkAuthority` lo permite, la pareja de una posición la
+fija ese índice antes que cualquier heurística de valores, y la corrección de
+SL/TP se aplica sobre ella. Eso no relaja ninguna de las salvaguardas de esta
+nota: siguen rigiendo el retardo de confirmación, la revalidación previa, el
+tope de acciones por hora, la desviación máxima de precio y el bloqueo por
+mercado cerrado. Ver [copiix_log_matching.md](copiix_log_matching.md).
+
 La automatización tampoco se habilita con identidad ambigua: todos los owners
 deben tener comentario propietario no vacío y cuenta Master esperada. Con una
 de esas dos piezas ausente el EA sólo puede arrancar si todas las correcciones

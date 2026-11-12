@@ -36,7 +36,7 @@ propia clave, con su propio `ALERTA` y su propio `RESUELTO`:
 | Clave | Problema | Se resuelve cuando |
 | --- | --- | --- |
 | `POSMISS\|canal\|ticketMaster` | Falta la copia de una posición activa | aparece la copia, o la posición Master deja de existir |
-| `POSAMB\|canal\|ticketMaster` | Enlace ambiguo de una posición | queda una única copia compatible, o la posición Master deja de existir |
+| `POSAMB\|canal\|ticketMaster` | Enlace ambiguo de una posición | queda una única copia compatible, el índice de Copiix identifica la copia, o la posición Master deja de existir |
 | `POSEXTRA\|canal\|ticketSlave` | Posición activa extra en el Slave | deja de sobrar, o la posición Slave deja de existir |
 | `POSVOL\|canal\|master\|slave` | La copia de una posición existe con otro volumen | los volúmenes vuelven a coincidir, o desaparece cualquiera de los dos lados |
 | `PVOL\|canal\|master\|slave` | La copia de una pendiente existe con otro volumen | igual que `POSVOL` |

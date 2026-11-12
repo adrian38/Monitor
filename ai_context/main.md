@@ -17,8 +17,9 @@ Antes de tocar un área, buscar el tema en esta carpeta y leer la nota relevante
   dos posiciones o pendientes gemelas son indistinguibles en el snapshot y
   unicidad del enlace en ambos sentidos, incluso con una sola copia y un
   ticket ignorado en MT5, y al revalidar creaciones MT5.
-- [copiix_log_matching.md](copiix_log_matching.md): diagnóstico opcional de
-  posiciones ambiguas con Journals y logs de Experts de Copiix en MT5.
+- [copiix_log_matching.md](copiix_log_matching.md): identidad exacta de las
+  copias con Journals y logs de Experts de Copiix en MT5. Desde la v1.37 el
+  Slave lanza el auxiliar y el índice enlaza con autoridad operativa.
 - [telegram_messages.md](telegram_messages.md): formato humano unificado,
   identificadores de cuenta, datos operativos, alerta de recuentos y avisos de
   creación desactivada.

@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CopyMonitor_Slave_MT5_v1_36_MULTI.mq5                            |
+//| CopyMonitor_Slave_MT5_v1_37_MULTI.mq5                            |
 //| Preserves GENERIC / PORTFOLIO46 / LUNA profiles.                 |
 //| Optional MultiMaster layer by exact Slave comment ownership.      |
 //| Open positions: monitor quantity + SL/TP, never auto-close.       |
@@ -7,10 +7,20 @@
 //| confirmed EXTRA pending in Slave can be deleted.                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.36"
-#property description "CopyMonitor Slave MT5 v1.36 MULTI"
+#property version "1.37"
+#property description "CopyMonitor Slave MT5 v1.37 MULTI"
 #include <Trade/Trade.mqh>
 CTrade g_trade;
+
+// Unico uso de una DLL en todo el EA: MQL5 no sabe lanzar un proceso, y el
+// indice de Copiix lo publica un auxiliar Python. La llamada queda detras de
+// MQL_DLLS_ALLOWED y de InpCopiixHelperScript, asi que una instalacion que no
+// autorice DLLs -o que no configure el auxiliar- nunca llega a invocarla y
+// funciona exactamente igual que en la v1.36.
+#import "shell32.dll"
+int ShellExecuteW(int hwnd,string operation,string file,string parameters,
+                  string directory,int showcmd);
+#import
 
 enum ENUM_COPY_PROFILE
 {
@@ -225,6 +235,29 @@ input int InpTelegramRetryMaxSeconds                  = 300;
 input group "===== DIAGNOSTIC ====="
 input bool   InpVerboseLog                            = false;
 input bool   InpUseCopiixLogMatches                   = false;
+// El EA no lee los logs: consume el indice que publica tools/copiix_log_matches.py.
+// Con la ruta del script el propio EA lo mantiene al dia; vacia, el indice
+// tiene que publicarlo un proceso externo, como hasta la v1.36.
+// Requiere "Permitir importacion de DLL" en las propiedades del EA.
+input string InpCopiixHelperScript                    = "";
+// Carpeta de datos del terminal Master, la que contiene MQL5\Logs. El Slave
+// no puede deducirla: esta en otro terminal.
+input string InpCopiixMasterDataPath                  = "";
+// Interprete de Python. Vacio usa el lanzador "py" que instala Python en
+// Windows. Acepta tambien la ruta completa a python.exe.
+input string InpCopiixPythonExe                       = "";
+// Cada cuanto se vuelve a publicar el indice. El Slave lo descarta a los 120 s,
+// asi que el refresco tiene que quedar holgadamente por debajo.
+input int    InpCopiixRefreshSeconds                  = 30;
+// Que se hace con lo que dice el indice. En true la pareja que identifica es
+// la que usa el monitor: se compara SL/TP contra ella y se corrige sobre ella,
+// igual que con cualquier otra pareja enlazada. En false vuelve al papel de la
+// v1.36, evidencia para cerrar un aviso y nada mas.
+// El indice ata ticket Master con ticket de la copia correlacionando la
+// confirmacion de la pendiente en el Journal Master con el envio de Copiix en
+// los 100 ms siguientes: es una identidad exacta en el lado Slave e inferida
+// por tiempo en el lado Master.
+input bool   InpCopiixLinkAuthority                   = true;
 
 struct PosRec { ulong ticket; string symbol; int type; double vol; double price; double sl; double tp; };
 struct CopiixPosLink { ulong master,slave; };
@@ -320,6 +353,9 @@ struct Blocked { string key; datetime last_seen; };
 // margen, no existe una identidad suficiente y el enlace se rechaza.
 #define CM_MATCH_EPS           1e-6
 
+// Lanzamientos fallidos seguidos del auxiliar de Copiix antes de desistir.
+#define CM_COPIIX_MAX_FAILURES 3
+
 bool g_busy=false;
 AlertState g_alerts[];
 Candidate g_candidates[];
@@ -346,6 +382,29 @@ long         g_expected_accounts[];
 
 // Estado vivo por canal, en el mismo orden que g_owners.
 ChannelState g_channel_state[];
+
+// Ultimo lanzamiento del auxiliar de Copiix, posicional con g_owners. Cero
+// significa que en esta sesion todavia no se ha publicado el indice de ese
+// canal, asi que el primer ciclo lo lanza sin esperar.
+datetime g_copiix_last_run[];
+// Carpeta de datos del terminal Master por canal, posicional con g_owners. Un
+// unico valor vale para todos; en multi-master cada canal puede venir de un
+// terminal distinto y entonces hace falta uno por canal.
+string   g_copiix_master_paths[];
+// Un auxiliar mal configurado no puede quedarse intentando arrancar un proceso
+// cada ciclo para siempre: tras varios fallos seguidos se desiste y se dice.
+int      g_copiix_launch_failures=0;
+bool     g_copiix_launch_disabled=false;
+// Primer lanzamiento de la sesion y aviso unico: ShellExecute solo confirma
+// que el proceso arranco, no que Python hiciera su trabajo. Si el indice no
+// aparece pese a los lanzamientos, hay que decirlo una vez.
+datetime g_copiix_first_run=0;
+bool     g_copiix_index_warned=false;
+// Lo que el indice hizo en el ultimo ciclo, por canal y para el panel. Sin
+// esto el usuario no tiene forma de ver si la herramienta esta trabajando: ese
+// fue justo el problema del parametro cuando solo era diagnostico.
+bool     g_copiix_index_ok[];
+int      g_copiix_links_used[];
 
 // Conexion del propio terminal Slave. Desconectado, PositionsTotal() devuelve
 // la foto cacheada: comparar contra ella es comparar contra el pasado.
@@ -961,6 +1020,15 @@ void BuildChannelState()
       g_channel_state[i].last_session="";
       g_channel_state[i].actions_since=0;
       g_channel_state[i].actions_count=0;
+   }
+   ArrayResize(g_copiix_last_run,ArraySize(g_owners));
+   ArrayResize(g_copiix_index_ok,ArraySize(g_owners));
+   ArrayResize(g_copiix_links_used,ArraySize(g_owners));
+   for(int i=0;i<ArraySize(g_copiix_last_run);i++)
+   {
+      g_copiix_last_run[i]=0;
+      g_copiix_index_ok[i]=false;
+      g_copiix_links_used[i]=0;
    }
 }
 int ChannelStateIndex(const string channel)
@@ -2840,6 +2908,145 @@ long CopiixIndexNumber(const string field)
    return value;
 }
 
+// ---------------------------------------------------------------------------
+// Publicacion del indice de Copiix desde el propio EA.
+// ---------------------------------------------------------------------------
+// Hasta la v1.36 el indice solo existia si alguien dejaba corriendo a mano
+// `copiix_log_matches.py --interval 30`, uno por canal. Con
+// InpUseCopiixLogMatches en true y ningun proceso vivo, el Slave abria un
+// archivo inexistente y volvia en silencio a sus reglas normales: el parametro
+// parecia activo y no hacia nada. Ahora el EA puede lanzar el auxiliar el
+// mismo, sin cambiar nada de lo que el auxiliar publica ni de como se lee.
+bool CopiixLauncherConfigured()
+{
+   return InpUseCopiixLogMatches && Trim(InpCopiixHelperScript)!="";
+}
+// Carpeta de datos del Master de este canal. Una sola ruta configurada sirve
+// para todos los canales; varias son posicionales, como el resto de listas.
+string CopiixMasterPathFor(const int owner_index)
+{
+   int n=ArraySize(g_copiix_master_paths);
+   if(n==0)
+      return "";
+   if(n==1)
+      return g_copiix_master_paths[0];
+   return (owner_index>=0 && owner_index<n) ? g_copiix_master_paths[owner_index] : "";
+}
+// El auxiliar se invoca en modo de una sola pasada, nunca con --interval. Un
+// proceso corto que termina solo no deja huerfanos al quitar el EA, no se
+// duplica al recompilar y no hay que matarlo en OnDeinit: ShellExecute no
+// devuelve ningun handle con el que hacerlo.
+string CopiixHelperArguments(const string channel,const long master_account,
+                             const string master_path)
+{
+   return "\""+Trim(InpCopiixHelperScript)+"\""+
+          " --master-data \""+master_path+"\""+
+          " --slave-data \""+TerminalInfoString(TERMINAL_DATA_PATH)+"\""+
+          " --master-account "+IntegerToString(master_account)+
+          " --slave-account "+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))+
+          " --channel "+channel+
+          " --common-files \""+TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\"";
+}
+bool LaunchCopiixHelper(const string channel,const long master_account,
+                        const string master_path)
+{
+   string exe=Trim(InpCopiixPythonExe);
+   string args=CopiixHelperArguments(channel,master_account,master_path);
+
+   // Vacio: el lanzador que instala Python en Windows. Con extension explicita
+   // para no depender de como resuelva ShellExecute un nombre sin ella. "-3"
+   // solo lo entiende ese lanzador, asi que no se añade a un interprete
+   // elegido a mano.
+   if(exe=="")
+   {
+      exe="py.exe";
+      args="-3 "+args;
+   }
+
+   // SW_HIDE: el auxiliar no tiene nada que mostrar y una consola por canal y
+   // por refresco seria inservible.
+   int rc=ShellExecuteW(0,"open",exe,args,"",0);
+
+   if(rc>32)
+      return true;
+
+   PrintFormat("[CM SLAVE] No se pudo lanzar el auxiliar de Copiix de %s. ShellExecute=%d.",
+               channel,rc);
+   return false;
+}
+// Mantiene el indice al dia. Se llama al final del ciclo: el proceso tarda en
+// escribir, asi que lo que publique lo aprovecha el ciclo siguiente, y el
+// indice vive 120 s, muy por encima del refresco admitido.
+void RefreshCopiixIndexes(const Owner &owners[],const Snap &snaps[])
+{
+   if(!CopiixLauncherConfigured() || g_copiix_launch_disabled)
+      return;
+
+   // Sin permiso de DLL no hay forma de lanzar un proceso desde MQL5. Se dice
+   // una vez y se deja de intentar: el resto del EA sigue funcionando igual.
+   if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
+   {
+      Print("[CM SLAVE] El auxiliar de Copiix necesita \"Permitir importación de DLL\" "
+            "en las propiedades del EA. El índice no se publicará desde aquí.");
+      g_copiix_launch_disabled=true;
+      return;
+   }
+
+   datetime now=TimeLocal();
+
+   for(int i=0;i<ArraySize(owners) && i<ArraySize(snaps);i++)
+   {
+      // Sin snapshot valido no se conoce la cuenta Master, y es un argumento
+      // obligatorio del auxiliar.
+      if(!snaps[i].valid || snaps[i].account<=0)
+         continue;
+      if(i>=ArraySize(g_copiix_last_run))
+         continue;
+      if(g_copiix_last_run[i]>0 && now-g_copiix_last_run[i]<InpCopiixRefreshSeconds)
+         continue;
+
+      string master_path=CopiixMasterPathFor(i);
+      if(master_path=="")
+         continue;
+
+      // El reloj avanza tanto si arranco como si no: sin esto un canal que
+      // falla reintentaria en cada ciclo y ahogaria el log.
+      g_copiix_last_run[i]=now;
+      if(g_copiix_first_run==0)
+         g_copiix_first_run=now;
+
+      if(LaunchCopiixHelper(owners[i].channel,snaps[i].account,master_path))
+      {
+         g_copiix_launch_failures=0;
+         continue;
+      }
+
+      g_copiix_launch_failures++;
+      if(g_copiix_launch_failures>=CM_COPIIX_MAX_FAILURES)
+      {
+         g_copiix_launch_disabled=true;
+         Print("[CM SLAVE] El auxiliar de Copiix no arranca. Se deja de intentar: "
+               "revise InpCopiixPythonExe e InpCopiixHelperScript.");
+         return;
+      }
+   }
+}
+// ShellExecute confirma que el proceso arranco, no que Python terminara bien:
+// una ruta de script equivocada arranca el interprete y muere sin publicar
+// nada. Si tras varios refrescos el indice sigue sin poder leerse, se dice una
+// sola vez en lugar de dejar al usuario creyendo que esta activo.
+void WarnCopiixIndexMissing()
+{
+   if(g_copiix_index_warned || !CopiixLauncherConfigured() || g_copiix_first_run==0)
+      return;
+   if(TimeLocal()-g_copiix_first_run<3*InpCopiixRefreshSeconds)
+      return;
+
+   g_copiix_index_warned=true;
+   Print("[CM SLAVE] El índice de Copiix sigue sin publicarse después de lanzar el "
+         "auxiliar. Compruebe la ruta del script, el intérprete y que Python puede "
+         "leer las carpetas de datos indicadas.");
+}
 bool ReadCopiixPositionLinks(const Snap &snap,CopiixPosLink &links[])
 {
    if(snap.schema!=5 || snap.connected!=CM_LINK_UP)
@@ -2900,6 +3107,40 @@ bool ReadCopiixPositionLinks(const Snap &snap,CopiixPosLink &links[])
    return true;
 }
 
+// Ata por ticket las parejas que el indice identifica. Es la unica identidad
+// exacta que existe para una copia: el snapshot no publica ninguna relacion
+// entre el ticket Master y el de la copia, y por eso dos entradas gemelas no
+// se pueden separar mirando solo sus valores.
+//
+// Sigue exigiendose que la copia sea compatible con lo que el Slave compara
+// -simbolo equivalente, sentido, volumen y tolerancia de entrada-: un indice
+// viejo no puede imponer una pareja que los datos de ahora desmienten. Y la
+// copia se marca como usada, de modo que un indice incoherente no puede
+// entregar la misma copia a dos tickets Master.
+int AssignCopiixPosLinks(const Owner &o,const Snap &snap,const PosRec &sp[],
+                         const CopiixPosLink &links[],const int &order[],
+                         bool &used[],int &assign[],bool &linked[])
+{
+   int atadas=0;
+
+   for(int k=0;k<ArraySize(order);k++)
+   {
+      int i=order[k];
+
+      if(assign[i]>=0)
+         continue;
+
+      int paired=CopiixPositionCandidate(o,snap.pos[i],sp,used,links);
+      if(paired<0)
+         continue;
+
+      assign[i]=paired;
+      used[paired]=true;
+      linked[i]=true;
+      atadas++;
+   }
+   return atadas;
+}
 int CopiixPositionCandidate(const Owner &o,const PosRec &master,const PosRec &slaves[],
                             const bool &used[],const CopiixPosLink &links[])
 {
@@ -2943,6 +3184,38 @@ void CheckOpen(const Owner &o,const Snap &snap)
    CopiixPosLink log_links[];
    bool read_log_links=false;
    bool log_links_valid=false;
+
+   // Parejas que vienen del indice. Se recuerdan para que el aviso que se
+   // cierre diga de donde sale la identidad, en lugar de afirmar una unicidad
+   // que los valores del snapshot no demuestran.
+   bool linked_by_log[];
+   ArrayResize(linked_by_log,ArraySize(snap.pos));
+   ArrayInitialize(linked_by_log,false);
+
+   // 0) Identidad externa, antes que cualquier heuristica. El indice de Copiix
+   //    ata el ticket Master con el de su copia; enlazar aqui hace que todo lo
+   //    que viene despues -SL, TP, volumen, avisos y correcciones- trabaje
+   //    sobre la pareja real y no sobre la mas parecida. Sin indice valido no
+   //    cambia nada: el emparejamiento por valores sigue siendo el de siempre.
+   if(InpUseCopiixLogMatches && InpCopiixLinkAuthority)
+   {
+      read_log_links=true;
+      log_links_valid=ReadCopiixPositionLinks(snap,log_links);
+
+      int used_links=0;
+      if(log_links_valid)
+         used_links=AssignCopiixPosLinks(o,snap,sp,log_links,order,su,assign,
+                                         linked_by_log);
+      else if(snap.schema==5 && snap.connected==CM_LINK_UP)
+         WarnCopiixIndexMissing();
+
+      int ch=ChannelStateIndex(o.channel);
+      if(ch>=0 && ch<ArraySize(g_copiix_index_ok))
+      {
+         g_copiix_index_ok[ch]=log_links_valid;
+         g_copiix_links_used[ch]=used_links;
+      }
+   }
 
    // 1) Asignar las parejas que los niveles identifican en ambos sentidos.
    //    Una sola copia puede encajar por precio con varios tickets Master.
@@ -3030,6 +3303,10 @@ void CheckOpen(const Owner &o,const Snap &snap)
          {
             read_log_links=true;
             log_links_valid=ReadCopiixPositionLinks(snap,log_links);
+            // Un snapshot antiguo o con el Master desconectado no se lee por
+            // diseño: eso no es un auxiliar que no publica.
+            if(!log_links_valid && snap.schema==5 && snap.connected==CM_LINK_UP)
+               WarnCopiixIndexMissing();
          }
          int log_candidate=-1;
          if(log_links_valid)
@@ -3103,9 +3380,14 @@ void CheckOpen(const Owner &o,const Snap &snap)
          "Ticket Slave: "+StringFormat("%I64u",sp[best].ticket)+"\n\n"+
          "Volumen Slave: "+VolumeText(sp[best].symbol,sp[best].vol)+"\n"+
          "Precio de entrada: "+PriceText(sp[best].price));
+      // Decir de dónde sale la identidad: afirmar que la copia es la única
+      // compatible sería falso cuando quien la señala es el índice.
       ResolveAlert(amb_key,
          AlertHeader(snap,"🟢 COPYMONITOR — RESUELTO")+
-         "\n\nPROBLEMA RESUELTO:\nLa posición Master ya se enlaza con una única copia Slave.\n\n"+
+         "\n\nPROBLEMA RESUELTO:\n"+
+         (linked_by_log[i]
+            ? "Los logs de Copiix identifican la copia de esta posición Master."
+            : "La posición Master ya se enlaza con una única copia Slave.")+"\n\n"+
          "Estado: POSICIÓN ACTIVA\n"+
          "Símbolo Master: "+snap.pos[i].symbol+"\n"+
          master_line+"\n"+
@@ -5468,7 +5750,7 @@ void SendStartupNotice(const Owner &o[],const Snap &s[])
    if(!InpSendStartupNotice) return;
 
    TgOrPush(LocalHeader("🔵 COPYMONITOR — VIGILANCIA ACTIVA")+
-      "\n\nCopyMonitor Slave v1.36 ha arrancado y vigila "+
+      "\n\nCopyMonitor Slave v1.37 ha arrancado y vigila "+
       IntegerToString(ArraySize(o))+" canal(es)."+
       MonitorStateText(o,s)+
       "\nACCIÓN:\nNinguna. Este aviso sólo confirma que el monitor está vivo"+
@@ -5521,10 +5803,25 @@ int ChannelActionCount(const string channel)
       return 0;
    return g_channel_state[i].actions_count;
 }
+// Estado del indice en el panel. Un parametro activado que no hace nada fue
+// precisamente el problema de la v1.36: aqui se ve si el indice se lee y
+// cuantas parejas esta atando ahora mismo.
+string CopiixPanelText(const int channel_index)
+{
+   if(channel_index<0 || channel_index>=ArraySize(g_copiix_index_ok))
+      return "-";
+
+   if(!InpCopiixLinkAuthority)
+      return "sólo aviso";
+   if(!g_copiix_index_ok[channel_index])
+      return "no disponible";
+
+   return "enlaces en uso: "+IntegerToString(g_copiix_links_used[channel_index]);
+}
 void Panel(const Owner &o[],const Snap &s[])
 {
    if(!InpShowPanel){Comment("");return;}
-   string p="COPYMONITOR SLAVE v1.36 MULTI\n";
+   string p="COPYMONITOR SLAVE v1.37 MULTI\n";
    p+="MultiMaster: "+(InpMultiMaster?"ON":"OFF")+"\nSlave: "+InpAccountNick+"\n";
    p+="Portafolio: "+InpPortfolioAlias+"\n";
    p+="Broker Slave: "+BrokerText(AccountInfoString(ACCOUNT_COMPANY))+"\n";
@@ -5542,6 +5839,8 @@ void Panel(const Owner &o[],const Snap &s[])
       p+="  Enlace Master: "+MasterLinkText(s[i])+"\n";
       p+="  Open M/S: "+IntegerToString(s[i].open_total)+"/"+IntegerToString(ArraySize(sp))+"\n";
       p+="  Pending M/S: "+IntegerToString(s[i].pending_total)+"/"+IntegerToString(ArraySize(sord))+"\n";
+      if(InpUseCopiixLogMatches)
+         p+="  Índice Copiix: "+CopiixPanelText(i)+"\n";
       p+="  Acciones automáticas esta hora: "+IntegerToString(ChannelActionCount(o[i].channel));
       if(InpMaxAutoActionsPerHour>0)
          p+="/"+IntegerToString(InpMaxAutoActionsPerHour);
@@ -5628,6 +5927,10 @@ void Cycle()
       if(slave_ok)
          ProcessOwner(g_owners[i],s[i]);
    }
+
+   // Despues de evaluar: lo que el auxiliar publique ahora lo aprovecha el
+   // ciclo siguiente, y el indice dura mucho mas que el intervalo de refresco.
+   RefreshCopiixIndexes(g_owners,s);
 
    if(slave_ok)
       CheckMarginLevel();
@@ -5745,6 +6048,91 @@ void ReleaseInstanceLock()
    }
 }
 
+// La ruta del auxiliar acaba dentro de una linea de comandos. Lo que no se
+// puede entrecomillar sin ambiguedad se rechaza al arrancar, para que el EA no
+// construya nunca una invocacion distinta de la que el usuario escribio.
+bool CopiixPathSafe(const string value)
+{
+   if(StringFind(value,"\"")>=0)
+      return false;
+   for(int i=0;i<StringLen(value);i++)
+      if(StringGetCharacter(value,i)<32)
+         return false;
+   return true;
+}
+// Se comprueba despues de BuildConfig porque necesita saber cuantos canales
+// vigila esta instancia.
+bool ValidateCopiixLauncher()
+{
+   ArrayResize(g_copiix_master_paths,0);
+
+   string script=Trim(InpCopiixHelperScript);
+
+   // Sin script no hay lanzador. El indice, si existe, lo publica otro: es el
+   // comportamiento de siempre y sigue siendo valido.
+   if(script=="")
+      return true;
+
+   if(!InpUseCopiixLogMatches)
+   {
+      Print("[CM SLAVE] InpCopiixHelperScript no sirve de nada con "
+            "InpUseCopiixLogMatches en false: el índice no se leería.");
+      return false;
+   }
+
+   string lower=script;
+   StringToLower(lower);
+   if(StringLen(lower)<4 || StringSubstr(lower,StringLen(lower)-3)!=".py")
+   {
+      Print("[CM SLAVE] InpCopiixHelperScript debe apuntar al archivo .py del auxiliar.");
+      return false;
+   }
+   if(!CopiixPathSafe(script) || !CopiixPathSafe(Trim(InpCopiixMasterDataPath)) ||
+      !CopiixPathSafe(Trim(InpCopiixPythonExe)))
+   {
+      Print("[CM SLAVE] Las rutas del auxiliar de Copiix no pueden llevar comillas "
+            "ni caracteres de control.");
+      return false;
+   }
+   if(Trim(InpCopiixMasterDataPath)=="")
+   {
+      Print("[CM SLAVE] InpCopiixMasterDataPath es obligatorio con el auxiliar: el "
+            "Slave no puede deducir la carpeta de datos de otro terminal.");
+      return false;
+   }
+
+   SplitClean(InpCopiixMasterDataPath,';',g_copiix_master_paths);
+
+   // Una sola ruta vale para todos los canales. Varias son posicionales, como
+   // el resto de listas multi-master: una lista a medias emparejaria canales
+   // con el terminal equivocado.
+   int n=ArraySize(g_copiix_master_paths);
+   if(n!=1 && n!=ArraySize(g_owners))
+   {
+      PrintFormat("[CM SLAVE] InpCopiixMasterDataPath debe traer una ruta, o una por "
+                  "canal: canales=%d rutas=%d",ArraySize(g_owners),n);
+      return false;
+   }
+
+   // El auxiliar rechaza las dos carpetas iguales, y con razon: leeria dos
+   // veces los logs del Slave y no cruzaria nada.
+   for(int i=0;i<n;i++)
+      if(g_copiix_master_paths[i]==TerminalInfoString(TERMINAL_DATA_PATH))
+      {
+         Print("[CM SLAVE] InpCopiixMasterDataPath no puede ser la carpeta de datos "
+               "de este mismo terminal.");
+         return false;
+      }
+
+   // El lector descarta el indice a los 120 s. Refrescarlo mas despacio lo
+   // dejaria caducado la mayor parte del tiempo.
+   if(InpCopiixRefreshSeconds<5 || InpCopiixRefreshSeconds>60)
+   {
+      Print("[CM SLAVE] InpCopiixRefreshSeconds debe estar entre 5 y 60.");
+      return false;
+   }
+   return true;
+}
 bool Validate()
 {
    if(!InstanceIdValid(Trim(InpSlaveID)))
@@ -5917,7 +6305,11 @@ bool Validate()
       Print("[CM SLAVE] El latido y el aviso de arranque necesitan Telegram o el respaldo push.");
       return false;
    }
-   return BuildConfig();
+   if(!BuildConfig())
+      return false;
+   // Despues de BuildConfig: la lista posicional de rutas se compara con los
+   // canales ya cargados.
+   return ValidateCopiixLauncher();
 }
 // Cada cierre genera varias transacciones y muchas no cambian el estado que se
 // compara. Reaccionar solo a las relevantes evita releer los snapshots decenas

@@ -92,6 +92,11 @@ se consideran extras borrables. Ver [telegram_messages.md](telegram_messages.md)
   orden en el Slave. La única identidad exacta sería que el copiador escribiera
   el ticket Master en el comentario de la copia, cosa que no depende de estos
   EAs.
+- Lo más cercano a esa identidad es el índice de Copiix, que desde la v1.37
+  enlaza con autoridad operativa cuando está disponible y es la fase 0 del
+  emparejamiento de posiciones. Ver
+  [copiix_log_matching.md](copiix_log_matching.md). Lo que el índice no cubre
+  sigue rigiéndose por todo lo anterior.
 
 Ver [pending_matching.md](pending_matching.md) y
 [protocol_and_safety.md](protocol_and_safety.md).
